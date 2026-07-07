@@ -91,7 +91,7 @@ export function NotesInput() {
       {/* Textarea */}
       <div className="flex-1 p-3">
         <Textarea
-          placeholder="Paste your raw thoughts here... &#10;&#10;Example: &#10;Machine learning is a subset of AI. Neural networks are inspired by the brain. Deep learning uses multiple layers. Supervised learning needs labeled data. Unsupervised learning finds patterns in unlabeled data. Reinforcement learning learns from rewards."
+          placeholder={"Paste your raw thoughts here...\n\nExample:\nI want to build an AI agent that can browse the web, remember past conversations, and use tools like calendar and email. It should know when to ask for help vs act autonomously. RAG might help with memory. Not sure if I need a vector DB or just context window tricks."}
           value={rawNotes}
           onChange={(e) => setRawNotes(e.target.value)}
           className="h-full min-h-[200px] bg-[#12122a] border-[#2a2a5a] text-[#c8c8ee] placeholder-[#5555aa] text-sm font-mono resize-none focus:border-indigo-500 focus:ring-indigo-500/20"

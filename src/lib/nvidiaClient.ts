@@ -1,18 +1,17 @@
 import type { NvidiaModel } from "./types";
 
-const BASE_URL = "https://integrate.api.nvidia.com/v1";
-
 /**
- * Nvidia NIM API wrapper — OpenAI-compatible endpoint.
- * Matches the pattern from the user's OpenAI SDK example:
+ * Nvidia NIM API wrapper — routes through our Next.js proxy
+ * to avoid browser CORS restrictions.
+ *
+ * Flow: Browser → /api/nvidia (same origin) → integrate.api.nvidia.com
+ *
+ * The API key is sent from the browser to our proxy only,
+ * then forwarded to Nvidia. No other server receives it.
+ *
+ * Matches the user's OpenAI SDK example:
  *   baseURL: 'https://integrate.api.nvidia.com/v1'
  *   model: 'openai/gpt-oss-120b'
- *
- * Handles reasoning models (GPT-OSS 120B) that return output
- * in `reasoning_content` instead of `content`.
- *
- * All calls are made directly from the browser to Nvidia's servers.
- * The API key is never sent to any other server.
  */
 export class NvidiaClient {
   private apiKey: string;
@@ -29,10 +28,9 @@ export class NvidiaClient {
   }
 
   /**
-   * Send a chat completion request that forces strict JSON output.
-   * The system prompt enforces JSON-only responses.
-   * Uses temperature=0.7 and max_tokens=4096 (reasoning models need
-   * more tokens because chain-of-thought eats into the budget).
+   * Send a chat completion request through our server-side proxy.
+   * The proxy forwards to Nvidia NIM API, bypassing CORS.
+   * Handles reasoning models that return output in reasoning_content.
    */
   async chat(userPrompt: string, systemPrompt?: string): Promise<string> {
     const messages: { role: "system" | "user" | "assistant"; content: string }[] = [];
@@ -43,26 +41,29 @@ export class NvidiaClient {
 
     messages.push({ role: "user", content: userPrompt });
 
-    const response = await fetch(`${BASE_URL}/chat/completions`, {
+    const response = await fetch("/api/nvidia", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${this.apiKey}`,
       },
       body: JSON.stringify({
+        apiKey: this.apiKey,
         model: this.model,
         messages,
         temperature: 0.7,
         max_tokens: 4096,
-        stream: false,
       }),
     });
 
     if (!response.ok) {
-      const errorBody = await response.text().catch(() => "Unknown error");
-      throw new Error(
-        `Nvidia API error (${response.status}): ${errorBody}`
-      );
+      let errorMsg = `API proxy error (${response.status})`;
+      try {
+        const errBody = await response.json();
+        errorMsg = errBody.error || errBody.details || errorMsg;
+      } catch {
+        // couldn't parse error body
+      }
+      throw new Error(errorMsg);
     }
 
     const data = await response.json();
@@ -74,7 +75,7 @@ export class NvidiaClient {
 
     // Reasoning models (e.g. GPT-OSS 120B) may put the actual output
     // in `reasoning_content` when `content` is null.
-    // Priority: content → reasoning_content → throw error
+    // The proxy already handles this, but double-check here too.
     const content = message.content || message.reasoning_content;
 
     if (!content) {
