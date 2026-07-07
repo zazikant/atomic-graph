@@ -130,6 +130,48 @@ export class AXPipeline {
   }
 
   /**
+   * Sleep helper for backoff between retries.
+   */
+  private sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  /**
+   * Compute backoff delay based on the error message.
+   * - Rate-limit (429) errors: longer backoff (5s, 8s) — give NVIDIA time to reset
+   * - Timeouts: shorter backoff (2s, 4s) — try again quickly
+   * - Other errors: medium backoff (3s, 5s)
+   *
+   * Returns [delayMs, humanReadableReason].
+   */
+  private computeBackoff(errorMsg: string, attempt: number): { delayMs: number; reason: string } {
+    const msg = (errorMsg || "").toLowerCase();
+    const isRateLimit =
+      msg.includes("rate limit") ||
+      msg.includes("429") ||
+      msg.includes("too many requests") ||
+      msg.includes("retry attempt");
+    const isTimeout =
+      msg.includes("timeout") ||
+      msg.includes("aborted") ||
+      msg.includes("timed out");
+
+    if (isRateLimit) {
+      // 5s, 8s — rate limits usually clear in 5-10s
+      const delays = [0, 5000, 8000];
+      return { delayMs: delays[attempt - 1] || 8000, reason: "rate-limit backoff" };
+    }
+    if (isTimeout) {
+      // 2s, 4s — timeouts are usually transient, retry quickly
+      const delays = [0, 2000, 4000];
+      return { delayMs: delays[attempt - 1] || 4000, reason: "timeout backoff" };
+    }
+    // 3s, 5s — generic backoff
+    const delays = [0, 3000, 5000];
+    return { delayMs: delays[attempt - 1] || 5000, reason: "backoff" };
+  }
+
+  /**
    * Wrap an async API call with rate-limit / transient error detection.
    */
   private async callWithRetryAwareness<T>(
@@ -376,29 +418,38 @@ ${chunk}`;
       // Per-chunk retry loop (matches LINK step pattern).
       // Each /api/nvidia-stream call has an 18s timeout × 1 attempt.
       // We retry up to 3 times at the pipeline level to push per-chunk
-      // success rate from ~60% to ~94%.
+      // success rate from ~60% to ~94%. Adaptive backoff between retries
+      // (5s for rate limits, 2s for timeouts, 3s otherwise) gives NVIDIA
+      // time to reset instead of hammering it with immediate retries.
       const MAX_CHUNK_ATTEMPTS = 3;
       let chunkResult: ExtractResult | null = null;
+      let lastChunkError = "";
       for (let chunkAttempt = 1; chunkAttempt <= MAX_CHUNK_ATTEMPTS; chunkAttempt++) {
         try {
           if (chunkAttempt > 1) {
+            // Compute backoff based on the previous error
+            const prevErr = lastChunkError || "";
+            const backoff = this.computeBackoff(prevErr, chunkAttempt);
             this.emit(
               "retrying",
               1,
               0,
               false,
               undefined,
-              `Section ${i + 1} attempt ${chunkAttempt}/${MAX_CHUNK_ATTEMPTS} — retrying…`,
+              `Section ${i + 1} attempt ${chunkAttempt}/${MAX_CHUNK_ATTEMPTS} in ${backoff.delayMs / 1000}s (${backoff.reason})…`,
             );
+            await this.sleep(backoff.delayMs);
           }
           chunkResult = await this.callWithRetryAwareness(
             () => this.extractChunk(chunks[i], i, chunks.length),
             1,
             `Extract (section ${i + 1}/${chunks.length}${chunkAttempt > 1 ? `, retry ${chunkAttempt}` : ""})`,
           );
+          lastChunkError = "";
           break; // success
         } catch (error) {
           const msg = error instanceof Error ? error.message : String(error);
+          lastChunkError = msg;
           console.warn(
             `[AX Pipeline] Chunk ${i + 1}/${chunks.length} attempt ${chunkAttempt}/${MAX_CHUNK_ATTEMPTS} failed: ${msg}`,
           );
@@ -715,26 +766,32 @@ Current graph: ${JSON.stringify(graphCompact)}`;
       this.emit("linking", attempt, 0, false);
       let linked: LinkResult | null = null;
       const MAX_LINK_ATTEMPTS = 3;
+      let lastLinkError = "";
       for (let linkAttempt = 1; linkAttempt <= MAX_LINK_ATTEMPTS; linkAttempt++) {
         try {
           if (linkAttempt > 1) {
+            // Adaptive backoff — give NVIDIA time to reset on rate limits
+            const backoff = this.computeBackoff(lastLinkError, linkAttempt);
             this.emit(
               "retrying",
               attempt,
               0,
               false,
               undefined,
-              `Link attempt ${linkAttempt}/${MAX_LINK_ATTEMPTS} — previous call failed, retrying…`,
+              `Link attempt ${linkAttempt}/${MAX_LINK_ATTEMPTS} in ${backoff.delayMs / 1000}s (${backoff.reason})…`,
             );
+            await this.sleep(backoff.delayMs);
           }
           linked = await this.callWithRetryAwareness(
             () => this.link(extracted),
             attempt,
             `Link${linkAttempt > 1 ? ` (retry ${linkAttempt})` : ""}`,
           );
+          lastLinkError = "";
           break; // success
         } catch (linkError) {
           const msg = linkError instanceof Error ? linkError.message : String(linkError);
+          lastLinkError = msg;
           console.warn(
             `[AX Pipeline] Link attempt ${linkAttempt}/${MAX_LINK_ATTEMPTS} failed: ${msg}`,
           );
