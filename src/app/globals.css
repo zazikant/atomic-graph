@@ -207,10 +207,35 @@
   background: linear-gradient(90deg, #6366f1, #8b5cf6) !important;
 }
 
-/* ─── Mobile responsive: stack vertically ────────────────── */
+/* ─── Mobile responsive ─────────────────────────────────── */
 
 @media (max-width: 768px) {
   .react-flow__minimap {
     display: none !important;
+  }
+
+  /* Smaller controls on mobile */
+  .react-flow__controls {
+    transform: scale(0.85);
+    transform-origin: bottom left;
+  }
+
+  /* Ensure touch targets are at least 44px */
+  .react-flow__controls button {
+    width: 30px !important;
+    height: 30px !important;
+  }
+
+  /* Smaller export buttons on mobile */
+  .react-flow__panel button {
+    font-size: 10px !important;
+    padding: 4px 8px !important;
+  }
+}
+
+/* Use dynamic viewport height for mobile browsers */
+@supports (height: 100dvh) {
+  .h-screen {
+    height: 100dvh;
   }
 }

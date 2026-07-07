@@ -8,7 +8,11 @@ import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
 import { Sparkles, Loader2, FileText, Trash2 } from "lucide-react";
 
-export function NotesInput() {
+interface NotesInputProps {
+  onGraphGenerated?: () => void;
+}
+
+export function NotesInput({ onGraphGenerated }: NotesInputProps) {
   const {
     rawNotes,
     setRawNotes,
@@ -67,6 +71,9 @@ export function NotesInput() {
           result.score,
           result.attempts
         );
+
+        // Notify parent (mobile tab switch)
+        onGraphGenerated?.();
       } else {
         setPipelineError("Pipeline completed but produced no results. Try again with different notes.");
         setIsRunning(false);
@@ -81,7 +88,7 @@ export function NotesInput() {
   return (
     <div className="flex flex-col h-full">
       {/* Header */}
-      <div className="flex items-center gap-2 px-4 py-3 border-b border-[#2a2a5a]">
+      <div className="flex items-center gap-2 px-3 py-2.5 border-b border-[#2a2a5a]">
         <FileText className="w-4 h-4 text-[#8888cc]" />
         <h2 className="text-[#e0e0ff] font-mono text-sm font-semibold">
           Raw Notes
@@ -89,12 +96,12 @@ export function NotesInput() {
       </div>
 
       {/* Textarea */}
-      <div className="flex-1 p-3">
+      <div className="flex-1 p-3 min-h-0">
         <Textarea
           placeholder={"Paste your raw thoughts here...\n\nExample:\nI want to build an AI agent that can browse the web, remember past conversations, and use tools like calendar and email. It should know when to ask for help vs act autonomously. RAG might help with memory. Not sure if I need a vector DB or just context window tricks."}
           value={rawNotes}
           onChange={(e) => setRawNotes(e.target.value)}
-          className="h-full min-h-[200px] bg-[#12122a] border-[#2a2a5a] text-[#c8c8ee] placeholder-[#5555aa] text-sm font-mono resize-none focus:border-indigo-500 focus:ring-indigo-500/20"
+          className="h-full min-h-[140px] bg-[#12122a] border-[#2a2a5a] text-[#c8c8ee] placeholder-[#5555aa] text-sm font-mono resize-none focus:border-indigo-500 focus:ring-indigo-500/20"
           disabled={isRunning}
         />
       </div>

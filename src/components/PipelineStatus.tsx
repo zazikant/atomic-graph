@@ -71,7 +71,7 @@ export function PipelineStatus() {
   return (
     <div className="flex flex-col">
       {/* Header */}
-      <div className="flex items-center gap-2 px-4 py-3 border-t border-[#2a2a5a]">
+      <div className="flex items-center gap-2 px-3 py-2.5 border-t border-[#2a2a5a]">
         <GitBranch className="w-4 h-4 text-[#8888cc]" />
         <h2 className="text-[#e0e0ff] font-mono text-sm font-semibold">
           AX Pipeline
@@ -127,7 +127,7 @@ export function PipelineStatus() {
         {pipelineError && (
           <div className="flex items-start gap-2 p-2 rounded bg-red-950/40 border border-red-900/50">
             <XCircle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
-            <span className="text-red-300 font-mono text-xs leading-relaxed">
+            <span className="text-red-300 font-mono text-xs leading-relaxed break-words">
               {pipelineError}
             </span>
           </div>
@@ -135,25 +135,25 @@ export function PipelineStatus() {
 
         {/* Iteration Logs */}
         {iterationLogs.length > 0 && (
-          <ScrollArea className="max-h-[160px]">
+          <ScrollArea className="max-h-[120px] md:max-h-[160px]">
             <div className="space-y-1.5">
               {iterationLogs.map((log, i) => (
                 <div
                   key={i}
                   className="flex items-center gap-2 px-2 py-1.5 rounded bg-[#12122a] border border-[#2a2a5a]"
                 >
-                  <span className="text-[#8888cc] font-mono text-[10px] w-4 text-center">
+                  <span className="text-[#8888cc] font-mono text-[10px] w-4 text-center shrink-0">
                     {log.iteration}
                   </span>
                   {log.passed ? (
-                    <CheckCircle2 className="w-3 h-3 text-emerald-400" />
+                    <CheckCircle2 className="w-3 h-3 text-emerald-400 shrink-0" />
                   ) : (
-                    <XCircle className="w-3 h-3 text-red-400" />
+                    <XCircle className="w-3 h-3 text-red-400 shrink-0" />
                   )}
                   <span className="text-[#c8c8ee] font-mono text-[11px] flex-1 truncate">
                     {PHASE_LABELS[log.phase] || log.phase}
                   </span>
-                  <span className="text-[#8888cc] font-mono text-[10px]">
+                  <span className="text-[#8888cc] font-mono text-[10px] shrink-0">
                     {(log.score * 100).toFixed(0)}%
                   </span>
                 </div>
