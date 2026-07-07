@@ -15,6 +15,9 @@ const SYSTEM_PROMPT = `You are a semantic reasoning engine that builds knowledge
 You do NOT merely reformat or summarise — you REASON through the semantic space of ideas.
 You surface implicit structure the writer already knows but didn't articulate.
 You infer missing concepts, bridge gaps, and make hidden relationships explicit.
+QUALITY MATTERS: you preserve the writer's original meaning faithfully.
+You do NOT over-process, hallucinate, or add unnecessary complexity.
+When the original notes are already clear and complete, you recognise that and score high.
 Always respond with valid JSON only. No markdown, no explanation, no code fences.
 Every response must be a single valid JSON object parseable by JSON.parse().`;
 
@@ -23,6 +26,7 @@ Every response must be a single valid JSON object parseable by JSON.parse().`;
 export class AXPipeline {
   private client: NvidiaClient;
   private onIteration: (log: IterationLog) => void;
+  private rawNotes: string = "";
 
   constructor(
     apiKey: string,
@@ -65,14 +69,16 @@ Do NOT merely list keywords from the text. Instead:
 - Infer implicit concepts the writer assumes but doesn't name (e.g. if they mention "RAG needs embeddings", the concept "vector similarity search" is implicit)
 - Surface the "glue" concepts that connect ideas but are left unsaid
 - Each concept gets a concise title and a 1-2 sentence summary explaining WHY it matters in this context
+- PRESERVE the writer's original intent. Do NOT rephrase in ways that change meaning.
+- Minor wording differences ("retains" vs "preserves", "uses" vs "employs") are NOT new concepts.
 
 Return JSON: { "nodes": [{ "id": "c1", "title": "...", "summary": "...", "tags": ["..."] }] }
 
 Raw notes:
 ${rawNotes}`;
 
-    const refinementPrompt = `You previously extracted atomic concepts, but the validation found gaps.
-Reason deeper into the semantic space:
+    const refinementPrompt = `You previously extracted atomic concepts, but the validation found specific gaps.
+Reason deeper — but ONLY where the critique identified real problems.
 
 PREVIOUS CONCEPTS:
 ${JSON.stringify(previousResult?.nodes?.slice(0, 30), null, 2)}
@@ -80,12 +86,13 @@ ${JSON.stringify(previousResult?.nodes?.slice(0, 30), null, 2)}
 ORIGINAL NOTES:
 ${rawNotes}
 
-IMPROVE by:
-1. Are there concepts the writer implied but didn't name? Add them.
-2. Are there "bridge" concepts that connect two existing ideas but are missing? Add them.
-3. Are any concepts too broad? Split them into truly atomic units.
-4. Are any summaries shallow? Deepen them to explain WHY the concept matters.
-5. Keep all existing valid concepts — only ADD or SPLIT, never remove.
+IMPROVE by addressing ONLY the specific issues found:
+1. If a concept is truly missing (not just rephrased), add it.
+2. If a "bridge" concept genuinely connects two clusters, add it.
+3. If a concept is genuinely non-atomic (covers two distinct ideas), split it.
+4. Do NOT rephrase existing concepts just for style — preserve the writer's wording when it's accurate.
+5. Do NOT add speculative concepts that the writer didn't imply.
+6. Keep all existing valid concepts — only ADD or SPLIT where genuinely needed.
 
 Return JSON: { "nodes": [{ "id": "c1", "title": "...", "summary": "...", "tags": ["..."] }] }`;
 
@@ -128,6 +135,9 @@ Strength (0.0-1.0): how certain and direct is this link?
 - 0.4-0.7: inferred bridge (e.g. "agent loop connects tools to RAG")
 - 0.0-0.4: speculative but plausible
 
+QUALITY RULE: Only create edges where a REAL semantic relationship exists.
+Do NOT fabricate connections just to make the graph look more connected.
+
 Return JSON: {
   "nodes": [<same nodes as input>],
   "edges": [{ "source": "nodeId", "target": "nodeId", "label": "specific relationship", "strength": 0.8 }]
@@ -164,28 +174,51 @@ Nodes: ${JSON.stringify(extracted.nodes, null, 2)}`;
     };
   }
 
-  // ─── Step 3: VALIDATE — self-critique the semantic graph ──
+  // ─── Step 3: VALIDATE — quality-aware self-critique ───────
 
   private async validate(graph: LinkResult): Promise<ValidationResult> {
-    const prompt = `You are critically evaluating a knowledge graph. This graph was built by reasoning through someone's raw notes — NOT by reformatting them.
+    const prompt = `You are critically evaluating a knowledge graph for BOTH quality AND semantic fidelity.
+
+The graph was built by reasoning through someone's raw notes. Your job is to judge whether the graph
+is a FAITHFUL and COMPLETE representation of the writer's thinking — not whether it looks impressive.
 
 Evaluate on these axes:
-1. ATOMICITY: Is every concept truly one idea? Or are some secretly two concepts mashed together?
-2. COMPLETENESS: Are there implicit concepts the writer assumed but the graph missed?
-   Think about what's BETWEEN the lines — what bridges connect disconnected clusters?
-3. RELATIONSHIP QUALITY: Are edges specific (e.g. "requires", "enables") or lazy (e.g. "related to")?
-4. STRUCTURAL INTEGRITY: Are there orphan nodes with no edges? Are there dense clusters missing cross-links?
-5. SEMANTIC DEPTH: Does the graph reveal structure the writer didn't articulate? Or does it merely restate what was written?
 
-Be harsh. A score of 0.75 means you found minor gaps. Below 0.5 means significant missing structure.
+1. SEMANTIC FIDELITY (most important): Does the graph faithfully preserve the writer's meaning?
+   - Minor wording changes ("retains" vs "preserves") do NOT lower the score — meaning is preserved.
+   - Any concept that distorts, over-interprets, or hallucinates beyond what the writer intended DOES lower the score.
+   - If the original notes are already clear and well-structured, the graph should score HIGH (0.90+).
+
+2. ATOMICITY: Is every concept truly one idea? Or are some secretly two concepts mashed together?
+
+3. COMPLETENESS: Are there implicit concepts the writer assumed but the graph missed?
+   Think about what's BETWEEN the lines — what bridges connect disconnected clusters?
+   But do NOT penalise if the notes are simple and don't have hidden depth.
+
+4. RELATIONSHIP QUALITY: Are edges specific (e.g. "requires", "enables") or lazy (e.g. "related to")?
+
+5. STRUCTURAL INTEGRITY: Are there orphan nodes with no edges? Dense clusters missing cross-links?
+
+SCORING GUIDANCE:
+- 0.90-1.00: The graph faithfully represents the notes. Minor wording differences only. Well-structured input.
+- 0.75-0.89: Good but has minor gaps — a missing bridge concept or a few generic edge labels.
+- 0.50-0.74: Significant gaps — missing concepts, broken relationships, or non-atomic nodes.
+- 0.00-0.49: Major problems — hallucinated concepts, distorted meaning, or severely incomplete.
+
+Be FAIR. If the notes are clear and the graph captures them well, do NOT invent reasons to lower the score.
+If the only issues are minor wording changes that don't affect meaning, score 0.90+.
+
+ORIGINAL NOTES (for comparison):
+${this.rawNotes}
+
+Graph: ${JSON.stringify(graph, null, 2)}
 
 Return JSON: {
   "score": 0.85,
   "issues": ["specific issue 1", "specific issue 2"],
   "suggestions": ["specific fix 1", "specific fix 2"]
 }
-
-Graph: ${JSON.stringify(graph, null, 2)}`;
+Only list issues that AFFECT MEANING or STRUCTURE, not cosmetic wording differences.`;
 
     const result = await this.client.chatJSON<ValidationResult>(
       prompt,
@@ -202,18 +235,23 @@ Graph: ${JSON.stringify(graph, null, 2)}`;
     };
   }
 
-  // ─── Step 4: REFINE — fill the gaps the critique found ────
+  // ─── Step 4: REFINE — targeted fixes only ─────────────────
 
   private async refine(
     graph: LinkResult,
     issues: string[]
   ): Promise<LinkResult> {
-    const prompt = `The self-critique found these issues in your knowledge graph. Fix them by reasoning DEEPER.
+    const prompt = `The self-critique found these SPECIFIC issues in your knowledge graph.
+Fix ONLY these issues — do NOT rework everything.
 
-CRITICAL: You are not just reformatting — you are SURFACING IMPLICIT STRUCTURE.
-If the critique says "missing bridge concept", INFER what that bridge is and add it.
-If it says "edge too generic", replace "related to" with a specific verb.
-If it says "concept not atomic", SPLIT it into two and link them.
+CRITICAL QUALITY RULES:
+- Preserve the writer's original wording where it's accurate and meaningful.
+- Only change what the critique identified as genuinely broken.
+- Do NOT rephrase for style — only fix SEMANTIC or STRUCTURAL problems.
+- If the critique says "missing bridge concept", INFER what that bridge is and add it.
+- If it says "edge too generic", replace with a specific verb — but keep the same meaning.
+- If it says "concept not atomic", SPLIT it into two and link them.
+- Do NOT add speculative concepts that the writer didn't imply.
 
 Issues to fix:
 ${issues.map((i) => `- ${i}`).join("\n")}
@@ -221,7 +259,7 @@ ${issues.map((i) => `- ${i}`).join("\n")}
 Current graph: ${JSON.stringify(graph, null, 2)}
 
 Return the corrected full graph JSON with both nodes and edges.
-You may ADD new nodes for missing bridge concepts, SPLIT non-atomic nodes, and REPLACE weak edges with specific ones.`;
+Only ADD or CHANGE what's needed to fix the listed issues. Preserve everything else.`;
 
     const result = await this.client.chatJSON<LinkResult>(prompt, SYSTEM_PROMPT);
 
@@ -268,6 +306,7 @@ You may ADD new nodes for missing bridge concepts, SPLIT non-atomic nodes, and R
     iterations: number,
     threshold: number
   ): Promise<PipelineResult> {
+    this.rawNotes = rawNotes;
     let result: LinkResult | null = null;
     let score = 0;
     let attempt = 0;
@@ -284,7 +323,7 @@ You may ADD new nodes for missing bridge concepts, SPLIT non-atomic nodes, and R
       this.emit("linking", attempt, 0, false);
       const linked = await this.link(extracted);
 
-      // Step 3: VALIDATE — self-critique
+      // Step 3: VALIDATE — quality-aware self-critique
       this.emit("validating", attempt, 0, false);
       const validation = await this.validate(linked);
       score = validation.score;
@@ -301,7 +340,7 @@ You may ADD new nodes for missing bridge concepts, SPLIT non-atomic nodes, and R
         timestamp: Date.now(),
       });
 
-      // Step 4: REFINE — fill the gaps the critique found
+      // Step 4: REFINE — targeted fixes only, if score below threshold
       if (score < threshold && attempt < iterations) {
         this.emit("refining", attempt, score, false);
         result = await this.refine(linked, validation.issues);

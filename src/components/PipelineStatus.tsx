@@ -10,12 +10,14 @@ import {
   Loader2,
   GitBranch,
   AlertTriangle,
+  ShieldCheck,
+  Sparkles,
 } from "lucide-react";
 
 const PHASE_LABELS: Record<string, string> = {
   extracting: "Extracting Concepts",
   linking: "Linking Relationships",
-  validating: "Validating Graph",
+  validating: "Validating Quality",
   refining: "Refining Output",
   complete: "Complete",
 };
@@ -23,22 +25,53 @@ const PHASE_LABELS: Record<string, string> = {
 const PHASE_ICONS: Record<string, React.ReactNode> = {
   extracting: <GitBranch className="w-3 h-3" />,
   linking: <GitBranch className="w-3 h-3" />,
-  validating: <CheckCircle2 className="w-3 h-3" />,
+  validating: <ShieldCheck className="w-3 h-3" />,
   refining: <AlertTriangle className="w-3 h-3" />,
   complete: <CheckCircle2 className="w-3 h-3" />,
 };
 
+function getQualityLabel(score: number): { label: string; icon: React.ReactNode } {
+  if (score >= 0.90) {
+    return {
+      label: "Excellent — faithful & complete",
+      icon: <Sparkles className="w-3 h-3" />,
+    };
+  }
+  if (score >= 0.75) {
+    return {
+      label: "Good — minor gaps only",
+      icon: <ShieldCheck className="w-3 h-3" />,
+    };
+  }
+  if (score >= 0.50) {
+    return {
+      label: "Fair — some gaps found",
+      icon: <AlertTriangle className="w-3 h-3" />,
+    };
+  }
+  return {
+    label: "Low — significant gaps",
+    icon: <XCircle className="w-3 h-3" />,
+  };
+}
+
 export function PipelineStatus() {
-  const { iterationLogs, pipelineScore, pipelineAttempts, pipelineError, isRunning } =
-    useGraphStore();
+  const {
+    iterationLogs,
+    pipelineScore,
+    pipelineAttempts,
+    pipelineError,
+    isRunning,
+  } = useGraphStore();
 
   const lastLog = iterationLogs[iterationLogs.length - 1];
   const currentPhase = lastLog?.phase;
+  const quality = getQualityLabel(pipelineScore);
 
   return (
     <div className="flex flex-col">
       {/* Header */}
-      <div className="flex items-center gap-2 px-4 py-3 border-b border-[#2a2a5a]">
+      <div className="flex items-center gap-2 px-4 py-3 border-t border-[#2a2a5a]">
         <GitBranch className="w-4 h-4 text-[#8888cc]" />
         <h2 className="text-[#e0e0ff] font-mono text-sm font-semibold">
           AX Pipeline
@@ -61,11 +94,11 @@ export function PipelineStatus() {
           </div>
         )}
 
-        {/* Confidence Score */}
+        {/* Quality / Semantic Fidelity Score */}
         <div className="space-y-1">
           <div className="flex items-center justify-between">
             <span className="text-[#8888cc] font-mono text-xs">
-              Confidence
+              Quality
             </span>
             <span className="text-[#e0e0ff] font-mono text-xs font-bold">
               {(pipelineScore * 100).toFixed(0)}%
@@ -80,7 +113,7 @@ export function PipelineStatus() {
         {/* Iterations Summary */}
         <div className="flex items-center gap-2">
           <span className="text-[#8888cc] font-mono text-xs">
-            Iterations:
+            Attempts:
           </span>
           <Badge
             variant="secondary"
@@ -102,7 +135,7 @@ export function PipelineStatus() {
 
         {/* Iteration Logs */}
         {iterationLogs.length > 0 && (
-          <ScrollArea className="max-h-[180px]">
+          <ScrollArea className="max-h-[160px]">
             <div className="space-y-1.5">
               {iterationLogs.map((log, i) => (
                 <div
@@ -129,24 +162,34 @@ export function PipelineStatus() {
           </ScrollArea>
         )}
 
-        {/* Rating Badge */}
+        {/* Quality Rating Badge */}
         {!isRunning && pipelineScore > 0 && (
-          <div className="flex items-center justify-center pt-1">
-            <Badge
-              className={`font-mono text-xs px-3 py-1 ${
-                pipelineScore >= 0.75
-                  ? "bg-emerald-900/50 text-emerald-300 border border-emerald-700/50"
-                  : pipelineScore >= 0.5
-                  ? "bg-amber-900/50 text-amber-300 border border-amber-700/50"
-                  : "bg-red-900/50 text-red-300 border border-red-700/50"
-              }`}
-            >
-              {pipelineScore >= 0.75
-                ? "High Confidence"
-                : pipelineScore >= 0.5
-                ? "Medium Confidence"
-                : "Low Confidence"}
-            </Badge>
+          <div className="space-y-2 pt-1">
+            <div className="flex items-center justify-center">
+              <Badge
+                className={`font-mono text-xs px-3 py-1 gap-1 ${
+                  pipelineScore >= 0.90
+                    ? "bg-emerald-900/50 text-emerald-300 border border-emerald-700/50"
+                    : pipelineScore >= 0.75
+                    ? "bg-emerald-900/30 text-emerald-400 border border-emerald-700/30"
+                    : pipelineScore >= 0.50
+                    ? "bg-amber-900/50 text-amber-300 border border-amber-700/50"
+                    : "bg-red-900/50 text-red-300 border border-red-700/50"
+                }`}
+              >
+                {quality.icon}
+                {quality.label}
+              </Badge>
+            </div>
+            <p className="text-[#5555aa] font-mono text-[10px] text-center leading-relaxed">
+              {pipelineScore >= 0.90
+                ? "Semantic fidelity verified. Meaning faithfully preserved."
+                : pipelineScore >= 0.75
+                ? "Minor gaps only. Core meaning captured accurately."
+                : pipelineScore >= 0.50
+                ? "Some concepts or relationships may be missing or imprecise."
+                : "Significant gaps. Consider refining your notes or increasing iterations."}
+            </p>
           </div>
         )}
       </div>

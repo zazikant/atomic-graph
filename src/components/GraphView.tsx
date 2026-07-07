@@ -9,8 +9,6 @@ import {
   useNodesState,
   useEdgesState,
   type Node,
-  type Edge,
-  type Connection,
   BackgroundVariant,
   Panel,
 } from "@xyflow/react";
@@ -21,13 +19,13 @@ import { NodeDrawer } from "./NodeDrawer";
 import { useGraphStore } from "@/store/graphStore";
 import type { NodeCardData } from "@/lib/types";
 import { toPng } from "html-to-image";
+import { generateHTMLExport } from "@/lib/exportHTML";
 import { Button } from "@/components/ui/button";
-import { Download, FileJson, Expand } from "lucide-react";
+import { Download, FileJson, Globe, Expand } from "lucide-react";
 
 // ─── Custom Animated Edge ────────────────────────────────────
 
 function AnimatedEdge({
-  id,
   sourceX,
   sourceY,
   targetX,
@@ -35,7 +33,6 @@ function AnimatedEdge({
   style = {},
   markerEnd,
   label,
-  data,
 }: any) {
   const edgeColor = style.stroke || "#6366f1";
   const edgeWidth = style.strokeWidth || 1.5;
@@ -176,6 +173,18 @@ export function GraphView() {
     URL.revokeObjectURL(url);
   }, [flowNodes, flowEdges]);
 
+  // ─── Export as self-contained HTML ─────────────────────────
+  const exportHTML = useCallback(() => {
+    const html = generateHTMLExport(flowNodes, flowEdges);
+    const blob = new Blob([html], { type: "text/html" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.download = "atomic-graph.html";
+    link.href = url;
+    link.click();
+    URL.revokeObjectURL(url);
+  }, [flowNodes, flowEdges]);
+
   // ─── Fit view helper ──────────────────────────────────────
   const fitViewOptions = { padding: 0.2, duration: 600 };
 
@@ -241,6 +250,15 @@ export function GraphView() {
 
         {/* Export Panel */}
         <Panel position="top-right" className="flex gap-1.5">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={exportHTML}
+            className="bg-[#1a1a3e] border-[#3a3a6a] text-[#c8c8ee] hover:bg-[#2a2a5a] hover:text-white font-mono text-xs h-7"
+          >
+            <Globe className="w-3 h-3 mr-1" />
+            HTML
+          </Button>
           <Button
             variant="outline"
             size="sm"
