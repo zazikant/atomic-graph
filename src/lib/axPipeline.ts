@@ -51,9 +51,12 @@ export interface AXPipelineOptions {
   streamCallbacks?: PipelineStreamCallbacks;
   /**
    * Route LLM calls through /api/nvidia-stream (SSE) instead of /api/nvidia.
-   * Default: false — preserves the original reliable non-streaming behaviour.
-   * Set to true to opt into live token + log streaming (currently ~60-70%
-   * success rate per call from Vercel Edge for gpt-oss-120b).
+   * Default: true — Vercel's Node serverless path silently hangs on
+   * gpt-oss-120b, so streaming via Edge runtime is the only reliable path.
+   * Each call has a 12s timeout × 2 attempts, with structured log + chunk
+   * events streamed to the browser so the user sees live progress.
+   *
+   * Set to false to fall back to the non-streaming /api/nvidia proxy.
    */
   useStreaming?: boolean;
 }
@@ -74,17 +77,17 @@ export class AXPipeline {
     this.client = new NvidiaClient(apiKey, model);
     this.onIteration = onIteration;
     this.streamCallbacks = options.streamCallbacks ?? {};
-    this.useStreaming = options.useStreaming ?? false;
+    // Default: streaming ON. Required for gpt-oss-120b on Vercel.
+    this.useStreaming = options.useStreaming ?? true;
   }
 
   /**
-   * Routes an LLM call. By default uses the original non-streaming chat()
-   * path (which goes through /api/nvidia with 15s × 3 retries — proven
-   * reliable for this project on Vercel).
+   * Routes an LLM call. By default uses the streaming path
+   * (/api/nvidia-stream on Edge runtime) because gpt-oss-120b hangs on
+   * Vercel's Node serverless. Streaming also gives live log + chunk events
+   * for the UI's terminal-style log viewer.
    *
-   * If the pipeline was constructed with streamCallbacks AND useStreaming=true,
-   * routes through /api/nvidia-stream (SSE) for live token + log streaming.
-   * Streaming is opt-in to preserve the original reliable behaviour.
+   * If useStreaming=false, falls back to chatJSON (non-streaming /api/nvidia).
    */
   private async callLLMJSON<T>(
     prompt: string,

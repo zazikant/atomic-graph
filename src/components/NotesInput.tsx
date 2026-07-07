@@ -46,11 +46,11 @@ export function NotesInput({ onGraphGenerated }: NotesInputProps) {
           addIterationLog(log);
         },
         {
-          // Streaming is OPT-IN. Default is useStreaming: false which preserves
-          // the original reliable behaviour (non-streaming /api/nvidia with
-          // 15s × 3 retries). Set useStreaming: true to route through
-          // /api/nvidia-stream for live token + log streaming.
-          useStreaming: false,
+          // Streaming ON by default — required for gpt-oss-120b on Vercel
+          // (Node serverless path silently hangs). Routes through
+          // /api/nvidia-stream (Edge runtime, 12s timeout × 2 attempts,
+          // live log + chunk events).
+          useStreaming: true,
           streamCallbacks: {
             onLog: (line) => {
               addLiveEvent({ ts: Date.now(), type: "log", line });
