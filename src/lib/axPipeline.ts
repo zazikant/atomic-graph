@@ -854,71 +854,106 @@ Current graph: ${JSON.stringify(graphCompact)}`;
       }
 
       // ─── Step 2: LINK — surface hidden relationships ─────────────
-      // LINK is mandatory — a graph without edges is useless. If all 3
-      // attempts fail, we throw and the pipeline stops (no validate, no
-      // partial graph). The user sees a clear error and can click Generate
-      // again for a fresh batch of attempts.
+      // LINK is mandatory — a graph without edges is useless. Same round-
+      // based retry pattern as chunked EXTRACT: 3 attempts per round,
+      // 30s cooldown between rounds, up to 2 rounds. If all rounds fail,
+      // throw and abort the pipeline.
       //
       // Each /api/nvidia-stream call has an 18s timeout × 1 attempt.
       // Rate-limit-aware backoff between retries: 10s for 429 errors,
       // 5s for timeouts (may be rate-limit-induced hangs).
       let linked: LinkResult | null = null;
       const MAX_LINK_ATTEMPTS = 3;
+      const MAX_LINK_ROUNDS = 2;
       let lastLinkError = "";
-      for (let linkAttempt = 1; linkAttempt <= MAX_LINK_ATTEMPTS; linkAttempt++) {
-        try {
-          if (linkAttempt > 1) {
-            const backoff = this.computeRetryBackoff(lastLinkError);
-            this.emit(
-              "retrying",
-              attempt,
-              0,
-              false,
-              undefined,
-              backoff.delayMs > 0
-                ? `Link attempt ${linkAttempt}/${MAX_LINK_ATTEMPTS} in ${backoff.delayMs / 1000}s (${backoff.reason})…`
-                : `Link attempt ${linkAttempt}/${MAX_LINK_ATTEMPTS} — retrying…`,
-            );
-            if (backoff.delayMs > 0) {
-              await this.sleep(backoff.delayMs);
-            }
-          }
-          linked = await this.callWithRetryAwareness(
-            () => this.link(extracted),
+
+      for (let linkRound = 1; linkRound <= MAX_LINK_ROUNDS && linked === null; linkRound++) {
+        if (linkRound > 1) {
+          this.emit(
+            "retrying",
             attempt,
-            `Link${linkAttempt > 1 ? ` (retry ${linkAttempt})` : ""}`,
+            0,
+            false,
+            undefined,
+            `Link round 2/${MAX_LINK_ROUNDS}: 30s cooldown before retrying (NVIDIA rate-limit reset)…`,
           );
-          lastLinkError = "";
-          break; // success
-        } catch (linkError) {
-          const msg = linkError instanceof Error ? linkError.message : String(linkError);
-          lastLinkError = msg;
-          console.warn(
-            `[AX Pipeline] Link attempt ${linkAttempt}/${MAX_LINK_ATTEMPTS} failed: ${msg}`,
+          await this.sleep(30_000);
+          this.emit(
+            "linking",
+            attempt,
+            0,
+            false,
+            undefined,
           );
-          if (linkAttempt === MAX_LINK_ATTEMPTS) {
-            // Edges are mandatory — fail the pipeline instead of continuing
-            // with nodes only. The user gets a clear error and can retry.
-            this.emit(
-              "retrying",
+        }
+
+        for (let linkAttempt = 1; linkAttempt <= MAX_LINK_ATTEMPTS; linkAttempt++) {
+          try {
+            if (linkAttempt > 1) {
+              const backoff = this.computeRetryBackoff(lastLinkError);
+              this.emit(
+                "retrying",
+                attempt,
+                0,
+                false,
+                undefined,
+                backoff.delayMs > 0
+                  ? `Link round ${linkRound} attempt ${linkAttempt}/${MAX_LINK_ATTEMPTS} in ${backoff.delayMs / 1000}s (${backoff.reason})…`
+                  : `Link round ${linkRound} attempt ${linkAttempt}/${MAX_LINK_ATTEMPTS} — retrying…`,
+              );
+              if (backoff.delayMs > 0) {
+                await this.sleep(backoff.delayMs);
+              }
+            }
+            linked = await this.callWithRetryAwareness(
+              () => this.link(extracted),
               attempt,
-              0,
-              false,
-              undefined,
-              `Link failed ${MAX_LINK_ATTEMPTS}× — edges are mandatory. Aborting pipeline. Please click Generate again.`,
+              `Link (round ${linkRound}${linkAttempt > 1 ? `, retry ${linkAttempt}` : ""})`,
             );
+            lastLinkError = "";
+            break; // success
+          } catch (linkError) {
+            const msg = linkError instanceof Error ? linkError.message : String(linkError);
+            lastLinkError = msg;
+            console.warn(
+              `[AX Pipeline] Link round ${linkRound} attempt ${linkAttempt}/${MAX_LINK_ATTEMPTS} failed: ${msg}`,
+            );
+            if (linkRound === MAX_LINK_ROUNDS && linkAttempt === MAX_LINK_ATTEMPTS) {
+              this.emit(
+                "retrying",
+                attempt,
+                0,
+                false,
+                undefined,
+                `Link failed after ${MAX_LINK_ROUNDS} rounds × ${MAX_LINK_ATTEMPTS} attempts — edges are mandatory. Aborting pipeline.`,
+              );
+            }
           }
         }
       }
 
-      // Edges are mandatory: if LINK failed all attempts, abort the pipeline
-      // with a clear error instead of showing a graph with no edges.
+      // Edges are mandatory: if LINK failed all rounds, abort the pipeline
       if (linked === null) {
         throw new Error(
-          `Could not generate edges for this graph after ${MAX_LINK_ATTEMPTS} attempts. ` +
+          `Could not generate edges after ${MAX_LINK_ROUNDS} rounds × ${MAX_LINK_ATTEMPTS} attempts. ` +
           `Last error: ${lastLinkError}. Please click Generate again — NVIDIA's rate limit ` +
           `may have cleared by then.`
         );
+      }
+
+      // ─── Pre-VALIDATE cooldown ──────────────────────────────────
+      // LINK just burned NVIDIA rate-limit budget. VALIDATE runs immediately
+      // after and may fail. 10s cooldown gives NVIDIA time to reset.
+      {
+        this.emit(
+          "retrying",
+          attempt,
+          0,
+          false,
+          undefined,
+          `Cooldown: waiting 10s before VALIDATE (lets NVIDIA rate-limit window reset after LINK)…`,
+        );
+        await this.sleep(10_000);
       }
 
       // Step 3: VALIDATE — quality-aware self-critique
