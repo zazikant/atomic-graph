@@ -26,7 +26,7 @@ function NodeCardComponent({ data, selected }: NodeProps & { data: NodeCardData 
       <div
         className={`
           relative bg-[#1e1e3f] border rounded-xl p-3 pl-4 cursor-pointer
-          transition-all duration-200 w-[200px]
+          transition-all duration-200 w-[220px]
           ${selected
             ? "border-indigo-400 shadow-[0_0_20px_rgba(99,102,241,0.4)]"
             : "border-[#4a4a8a] hover:border-[#6a6aaa] hover:shadow-[0_0_12px_rgba(100,100,255,0.3)]"
@@ -42,7 +42,7 @@ function NodeCardComponent({ data, selected }: NodeProps & { data: NodeCardData 
 
         {/* Title */}
         <h3
-          className="font-mono text-sm font-bold leading-tight mb-1 truncate"
+          className="font-mono text-sm font-bold leading-tight mb-1 line-clamp-2"
           style={{ color }}
         >
           {node.title}

@@ -2,8 +2,8 @@ import dagre from "@dagrejs/dagre";
 import type { Node, Edge } from "@xyflow/react";
 import type { AtomicNode, GraphEdge, NodeCardData, CLUSTER_COLORS } from "./types";
 
-const NODE_WIDTH = 200;
-const NODE_HEIGHT = 120;
+const NODE_WIDTH = 220;
+const NODE_HEIGHT = 130;
 
 /**
  * Auto-position nodes using Dagre's layered graph layout algorithm.

@@ -37,6 +37,7 @@ function AnimatedEdge({
   label,
   data,
   showLabel = true,
+  labelOffset = 0,
 }: any) {
   const edgeColor = style.stroke || "#6366f1";
   const edgeWidth = style.strokeWidth || 1.5;
@@ -46,6 +47,7 @@ function AnimatedEdge({
   const midY = (sourceY + targetY) / 2;
   const dx = targetX - sourceX;
   const dy = targetY - sourceY;
+  const edgeLength = Math.sqrt(dx * dx + dy * dy);
   const curvature = 0.2;
   const controlX = midX - dy * curvature;
   const controlY = midY + dx * curvature;
@@ -54,6 +56,15 @@ function AnimatedEdge({
 
   // Determine label text: prefer data.label, then label prop
   const labelText = data?.label || label;
+
+  // Compute label position with anti-collision offset.
+  // Offset is along the edge's perpendicular direction so labels
+  // stack vertically relative to the edge, not in world coords.
+  // The perpendicular unit vector is (-dy, dx) / edgeLength.
+  const perpX = edgeLength > 0 ? -dy / edgeLength : 0;
+  const perpY = edgeLength > 0 ? dx / edgeLength : -1;
+  const labelX = midX + perpX * labelOffset;
+  const labelY = midY + perpY * labelOffset - 8; // -8 for baseline above edge
 
   return (
     <>
@@ -75,19 +86,30 @@ function AnimatedEdge({
         markerEnd={markerEnd}
         className="animated-edge"
       />
-      {/* Edge label — only shown when showLabel is true */}
+      {/* Edge label — with collision offset */}
       {showLabel && labelText && (
-        <text
-          x={midX}
-          y={midY - 8}
-          textAnchor="middle"
-          className="text-[10px] fill-[#8888cc] font-mono"
-          style={{ pointerEvents: "none" }}
-        >
-          {typeof labelText === "string" && labelText.length > 20
-            ? labelText.slice(0, 18) + "…"
-            : labelText}
-        </text>
+        <g style={{ pointerEvents: "none" }}>
+          {/* Background pill for readability */}
+          <rect
+            x={labelX - (typeof labelText === "string" ? Math.min(labelText.length, 20) * 3.2 + 6 : 40)}
+            y={labelY - 9}
+            width={typeof labelText === "string" ? Math.min(labelText.length, 20) * 3.2 + 12 : 80}
+            height={14}
+            rx={4}
+            fill="#0a0a1a"
+            fillOpacity={0.85}
+          />
+          <text
+            x={labelX}
+            y={labelY}
+            textAnchor="middle"
+            className="text-[10px] fill-[#a0a0dd] font-mono"
+          >
+            {typeof labelText === "string" && labelText.length > 20
+              ? labelText.slice(0, 18) + "\u2026"
+              : labelText}
+          </text>
+        </g>
       )}
     </>
   );
@@ -126,14 +148,70 @@ function GraphCanvas() {
     }
   }, [flowEdges.length]);
 
-  // Create edge types with label visibility
+  // ─── Compute label offsets to prevent overlapping ─────────────
+  // Group edges by proximity of their midpoints and assign staggered
+  // offsets so labels don't collide.
+  const labelOffsets = useMemo(() => {
+    if (!showEdgeLabels || flowEdges.length === 0) return new Map<string, number>();
+
+    const offsets = new Map<string, number>();
+
+    // Compute midpoints for each edge using current node positions
+    const edgeMidpoints = flowEdges.map((e) => {
+      const srcNode = flowNodes.find((n) => n.id === e.source);
+      const tgtNode = flowNodes.find((n) => n.id === e.target);
+      if (!srcNode || !tgtNode) return { id: e.id, mx: 0, my: 0 };
+      return {
+        id: e.id,
+        mx: (srcNode.position.x + 110 + tgtNode.position.x + 110) / 2,
+        my: (srcNode.position.y + 60 + tgtNode.position.y + 60) / 2,
+      };
+    });
+
+    // Cluster edges whose midpoints are within 30px of each other
+    const CLUSTER_RADIUS = 30;
+    const LABEL_SPACING = 16; // pixels between stacked labels
+    const visited = new Set<string>();
+
+    for (let i = 0; i < edgeMidpoints.length; i++) {
+      if (visited.has(edgeMidpoints[i].id)) continue;
+      const cluster = [edgeMidpoints[i]];
+      visited.add(edgeMidpoints[i].id);
+
+      for (let j = i + 1; j < edgeMidpoints.length; j++) {
+        if (visited.has(edgeMidpoints[j].id)) continue;
+        const dx = edgeMidpoints[i].mx - edgeMidpoints[j].mx;
+        const dy = edgeMidpoints[i].my - edgeMidpoints[j].my;
+        if (Math.sqrt(dx * dx + dy * dy) < CLUSTER_RADIUS) {
+          cluster.push(edgeMidpoints[j]);
+          visited.add(edgeMidpoints[j].id);
+        }
+      }
+
+      // Assign staggered offsets within the cluster
+      if (cluster.length > 1) {
+        cluster.forEach((item, idx) => {
+          const offset = (idx - (cluster.length - 1) / 2) * LABEL_SPACING;
+          offsets.set(item.id, offset);
+        });
+      }
+    }
+
+    return offsets;
+  }, [showEdgeLabels, flowEdges, flowNodes]);
+
+  // Create edge types with label visibility and offset
   const edgeTypes = useMemo(
     () => ({
       animatedEdge: (props: any) => (
-        <AnimatedEdge {...props} showLabel={showEdgeLabels} />
+        <AnimatedEdge
+          {...props}
+          showLabel={showEdgeLabels}
+          labelOffset={labelOffsets.get(props.id) || 0}
+        />
       ),
     }),
-    [showEdgeLabels]
+    [showEdgeLabels, labelOffsets]
   );
 
   const [nodes, setNodes, onNodesChange] = useNodesState(flowNodes);

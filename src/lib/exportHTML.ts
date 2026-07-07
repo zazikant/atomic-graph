@@ -86,7 +86,7 @@ export function generateHTMLExport(
     border: 1px solid #4a4a8a;
     border-radius: 12px;
     padding: 12px 16px;
-    width: 200px;
+    width: 220px;
     cursor: pointer;
     transition: border-color 0.2s, box-shadow 0.2s;
     font-family: 'JetBrains Mono', 'Fira Code', monospace;
@@ -98,7 +98,7 @@ export function generateHTMLExport(
   .node-card .accent-bar {
     position: absolute; left: 0; top: 0; bottom: 0; width: 4px; border-radius: 12px 0 0 12px;
   }
-  .node-card h3 { font-size: 13px; font-weight: 700; margin-bottom: 4px; line-height: 1.3; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .node-card h3 { font-size: 13px; font-weight: 700; margin-bottom: 4px; line-height: 1.3; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
   .node-card p { font-size: 11px; color: #b0b0dd; line-height: 1.5; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; margin-bottom: 6px; }
   .node-card .tags { display: flex; gap: 4px; flex-wrap: wrap; }
   .node-card .tag { font-size: 9px; padding: 2px 6px; border-radius: 4px; background: #12122a; color: #8888cc; border: 1px solid #2a2a5a; }
@@ -180,6 +180,48 @@ window.jsxRuntime = {
 
   var GRAPH_DATA = ${graphData};
 
+  // ── Compute label offsets to prevent overlapping ──────────
+  var LABEL_SPACING = 16;
+  var CLUSTER_RADIUS = 30;
+  function computeLabelOffsets(nodes, edges) {
+    var offsets = {};
+    var midpoints = edges.map(function(e) {
+      var src = null, tgt = null;
+      for (var k = 0; k < nodes.length; k++) {
+        if (nodes[k].id === e.source) src = nodes[k];
+        if (nodes[k].id === e.target) tgt = nodes[k];
+      }
+      if (!src || !tgt) return { id: e.id, mx: 0, my: 0 };
+      return {
+        id: e.id,
+        mx: (src.position.x + 110 + tgt.position.x + 110) / 2,
+        my: (src.position.y + 65 + tgt.position.y + 65) / 2
+      };
+    });
+    var visited = {};
+    for (var i = 0; i < midpoints.length; i++) {
+      if (visited[midpoints[i].id]) continue;
+      var cluster = [midpoints[i]];
+      visited[midpoints[i].id] = true;
+      for (var j = i + 1; j < midpoints.length; j++) {
+        if (visited[midpoints[j].id]) continue;
+        var ddx = midpoints[i].mx - midpoints[j].mx;
+        var ddy = midpoints[i].my - midpoints[j].my;
+        if (Math.sqrt(ddx * ddx + ddy * ddy) < CLUSTER_RADIUS) {
+          cluster.push(midpoints[j]);
+          visited[midpoints[j].id] = true;
+        }
+      }
+      if (cluster.length > 1) {
+        cluster.forEach(function(item, idx) {
+          offsets[item.id] = (idx - (cluster.length - 1) / 2) * LABEL_SPACING;
+        });
+      }
+    }
+    return offsets;
+  }
+  var labelOffsets = computeLabelOffsets(GRAPH_DATA.nodes, GRAPH_DATA.edges);
+
   // ── Custom Node Component ────────────────────────
   function AtomicCard({ data, id }) {
     var nodeData = data.node;
@@ -206,20 +248,37 @@ window.jsxRuntime = {
     var sx = props.sourceX, sy = props.sourceY, tx = props.targetX, ty = props.targetY;
     var midX = (sx + tx) / 2, midY = (sy + ty) / 2;
     var dx = tx - sx, dy = ty - sy;
+    var edgeLen = Math.sqrt(dx * dx + dy * dy);
     var cX = midX - dy * 0.2, cY = midY + dx * 0.2;
     var path = 'M ' + sx + ' ' + sy + ' Q ' + cX + ' ' + cY + ' ' + tx + ' ' + ty;
-    var label = props.label;
+    var label = props.label || (props.data && props.data.label);
+    var offset = labelOffsets[props.id] || 0;
+
+    // Perpendicular direction for label offset
+    var perpX = edgeLen > 0 ? -dy / edgeLen : 0;
+    var perpY = edgeLen > 0 ? dx / edgeLen : -1;
+    var lx = midX + perpX * offset;
+    var ly = midY + perpY * offset - 8;
 
     var markerEnd = null;
     if (MarkerType) {
       markerEnd = { type: MarkerType.ArrowClosed, color: edgeColor, width: 20, height: 20 };
     }
 
+    var labelEls = null;
+    if (label) {
+      var shortLabel = (typeof label === 'string' && label.length > 20) ? label.slice(0, 18) + '\\u2026' : label;
+      var labelWidth = (typeof shortLabel === 'string' ? shortLabel.length : 10) * 3.2 + 12;
+      labelEls = [
+        h('rect', { x: lx - labelWidth / 2, y: ly - 9, width: labelWidth, height: 14, rx: 4, fill: '#0a0a1a', fillOpacity: 0.85 }),
+        h('text', { x: lx, y: ly, textAnchor: 'middle', style: { pointerEvents: 'none' }, fill: '#a0a0dd', fontSize: 10, fontFamily: 'monospace' }, shortLabel)
+      ];
+    }
+
     return h('g', null,
       h('path', { d: path, fill: 'none', stroke: edgeColor, strokeWidth: edgeWidth + 2, strokeOpacity: 0.15 }),
       h('path', { d: path, fill: 'none', stroke: edgeColor, strokeWidth: edgeWidth, strokeDasharray: '6 4', markerEnd: markerEnd, className: 'animated-edge' }),
-      label ? h('text', { x: midX, y: midY - 8, textAnchor: 'middle', style: { pointerEvents: 'none' }, fill: '#8888cc', fontSize: 10, fontFamily: 'monospace' },
-        (typeof label === 'string' && label.length > 20 ? label.slice(0, 18) + '\\u2026' : label)) : null
+      labelEls
     );
   }
 
