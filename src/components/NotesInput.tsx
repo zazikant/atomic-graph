@@ -27,10 +27,6 @@ export function NotesInput({ onGraphGenerated }: NotesInputProps) {
   } = useGraphStore();
 
   const handleGenerate = async () => {
-    if (!config.apiKey.trim()) {
-      setPipelineError("Please enter your Nvidia API key in the config bar above.");
-      return;
-    }
     if (!rawNotes.trim()) {
       setPipelineError("Please paste some notes before generating.");
       return;
@@ -110,7 +106,7 @@ export function NotesInput({ onGraphGenerated }: NotesInputProps) {
       <div className="flex gap-2 p-3 border-t border-[#2a2a5a]">
         <Button
           onClick={handleGenerate}
-          disabled={isRunning || !rawNotes.trim() || !config.apiKey.trim()}
+          disabled={isRunning || !rawNotes.trim()}
           className="flex-1 bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white font-mono text-sm h-10 shadow-lg shadow-indigo-500/20 transition-all duration-200"
         >
           {isRunning ? (

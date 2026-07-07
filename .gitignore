@@ -30,8 +30,10 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
-# env files (can opt-in for committing if needed)
-.env*
+# env files — keep .env.example in git
+.env
+.env.local
+.env.*.local
 
 # vercel
 .vercel
@@ -52,3 +54,28 @@ prompt
 server.log
 # Skills directory
 /skills/
+
+# Database
+/db/
+
+# Downloaded/generated files
+/download/
+
+# Worklog
+worklog.md
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+Thumbs.db
+
+# Build artifacts
+standalone/
+
+# Misc project files
+Caddyfile
+examples/

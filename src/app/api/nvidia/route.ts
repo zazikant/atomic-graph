@@ -2,6 +2,11 @@ import { NextRequest, NextResponse } from "next/server";
 
 const NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1";
 
+// ─── API Key Resolution ─────────────────────────────────────
+// Priority: client-provided key > NVIDIA_API_KEY env var
+// For Vercel deployment: set NVIDIA_API_KEY in your project's
+// Environment Variables dashboard and no client config is needed.
+
 // ─── Retry Configuration ────────────────────────────────────
 const MAX_RETRIES = 3;
 const RETRY_DELAY_MS = 15_000; // 15 seconds between retry attempts
@@ -71,9 +76,12 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
     const { apiKey, model, messages, temperature, max_tokens } = body;
 
-    if (!apiKey) {
+    // Resolve API key: client override > server env var
+    const effectiveApiKey = apiKey || process.env.NVIDIA_API_KEY;
+
+    if (!effectiveApiKey) {
       return NextResponse.json(
-        { error: "API key is required" },
+        { error: "API key is required. Set NVIDIA_API_KEY environment variable or provide it in the UI." },
         { status: 400 }
       );
     }
@@ -112,7 +120,7 @@ export async function POST(request: NextRequest) {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            Authorization: `Bearer ${apiKey}`,
+            Authorization: `Bearer ${effectiveApiKey}`,
           },
           body: requestBody,
         });

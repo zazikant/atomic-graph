@@ -31,7 +31,7 @@ export function ConfigBar() {
           <Key className="w-3.5 h-3.5 text-[#8888cc] shrink-0" />
           <Input
             type="password"
-            placeholder="Nvidia API Key"
+            placeholder="Nvidia API Key (optional if set on server)"
             value={config.apiKey}
             onChange={(e) => setConfig({ apiKey: e.target.value })}
             className="h-7 bg-[#1a1a3e] border-[#3a3a6a] text-[#e0e0ff] placeholder-[#6666aa] text-[11px] font-mono focus:border-indigo-500 focus:ring-indigo-500/30"

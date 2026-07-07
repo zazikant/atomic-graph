@@ -9,8 +9,9 @@ import type {
 import type { Node, Edge } from "@xyflow/react";
 import type { NodeCardData } from "@/lib/types";
 
-// ─── Default API key for testing ────────────────────────────
-const DEFAULT_API_KEY = "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";
+// No hardcoded API key — the server uses process.env.NVIDIA_API_KEY.
+// Users can optionally provide their own key via the UI as an override.
+const DEFAULT_API_KEY = "";
 
 // ─── Store Interface ─────────────────────────────────────────
 
