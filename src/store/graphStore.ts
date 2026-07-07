@@ -6,6 +6,8 @@ import type {
   NvidiaModel,
   AppConfig,
 } from "@/lib/types";
+import { CLUSTER_COLORS } from "@/lib/types";
+import { buildFlowGraph, applyDagreLayout } from "@/lib/graphLayout";
 import type { Node, Edge } from "@xyflow/react";
 import type { NodeCardData } from "@/lib/types";
 
@@ -45,6 +47,7 @@ interface GraphStore {
   setSelectedNodeId: (id: string | null) => void;
   updateNodePositions: (nodes: Node<NodeCardData>[]) => void;
   resetPipeline: () => void;
+  importGraphFromJSON: (json: string) => { success: boolean; error?: string };
 }
 
 // ─── Persist API key to localStorage ────────────────────────
@@ -144,4 +147,83 @@ export const useGraphStore = create<GraphStore>((set, get) => ({
       flowEdges: [],
       selectedNodeId: null,
     }),
+
+  importGraphFromJSON: (json: string) => {
+    try {
+      const data = JSON.parse(json);
+
+      // Validate structure
+      if (!data.nodes || !Array.isArray(data.nodes) || data.nodes.length === 0) {
+        return { success: false, error: "JSON must contain a non-empty 'nodes' array." };
+      }
+      if (!data.edges || !Array.isArray(data.edges)) {
+        return { success: false, error: "JSON must contain an 'edges' array." };
+      }
+
+      // Map to AtomicNode[] — accept both exported format and minimal format
+      const atomicNodes: AtomicNode[] = data.nodes.map((n: any, i: number) => ({
+        id: n.id || `n${i}`,
+        title: n.title || `Node ${i + 1}`,
+        summary: n.summary || "",
+        tags: Array.isArray(n.tags) ? n.tags : [],
+        content: n.content || n.summary || "",
+        cluster: n.cluster,
+      }));
+
+      // Map to GraphEdge[] — accept both exported format and minimal format
+      const graphEdges: GraphEdge[] = data.edges
+        .map((e: any, i: number) => ({
+          source: e.source,
+          target: e.target,
+          label: e.label || e.data?.label || "",
+          strength: e.strength ?? e.data?.strength ?? 0.5,
+        }))
+        .filter((e: GraphEdge) => e.source && e.target);
+
+      // Validate that edge references exist
+      const nodeIds = new Set(atomicNodes.map((n) => n.id));
+      const validEdges = graphEdges.filter(
+        (e) => nodeIds.has(e.source) && nodeIds.has(e.target)
+      );
+
+      if (validEdges.length === 0 && graphEdges.length > 0) {
+        return { success: false, error: "Edge source/target IDs don't match any node IDs." };
+      }
+
+      // Build the flow graph using the same pipeline as AI generation
+      const { nodes, edges } = buildFlowGraph(
+        atomicNodes,
+        validEdges,
+        CLUSTER_COLORS,
+        (id) => get().setSelectedNodeId(id)
+      );
+
+      const laidOutNodes = applyDagreLayout(nodes, edges);
+
+      set({
+        flowNodes: laidOutNodes,
+        flowEdges: edges,
+        pipelineScore: 1.0,
+        pipelineAttempts: 1,
+        isRunning: false,
+        pipelineError: null,
+        selectedNodeId: null,
+        iterationLogs: [
+          {
+            iteration: 1,
+            phase: "complete",
+            score: 1.0,
+            passed: true,
+            detail: "Imported from JSON",
+            timestamp: Date.now(),
+          },
+        ],
+      });
+
+      return { success: true };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Invalid JSON format";
+      return { success: false, error: `Parse error: ${message}` };
+    }
+  },
 }));
