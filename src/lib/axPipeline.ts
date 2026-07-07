@@ -39,18 +39,47 @@ CRITICAL OUTPUT RULES:
 
 // ─── AX Pipeline ───────────────────────────────────────────────
 
+export interface PipelineStreamCallbacks {
+  /** Fired for every structured log line from the NVIDIA client. */
+  onLog?: (line: string) => void;
+  /** Fired for every content chunk as it arrives (live tokens). */
+  onChunk?: (text: string) => void;
+}
+
 export class AXPipeline {
   private client: NvidiaClient;
   private onIteration: (log: IterationLog) => void;
+  private streamCallbacks: PipelineStreamCallbacks;
   private rawNotes: string = "";
 
   constructor(
     apiKey: string,
     model: NvidiaModel,
-    onIteration: (log: IterationLog) => void
+    onIteration: (log: IterationLog) => void,
+    streamCallbacks: PipelineStreamCallbacks = {},
   ) {
     this.client = new NvidiaClient(apiKey, model);
     this.onIteration = onIteration;
+    this.streamCallbacks = streamCallbacks;
+  }
+
+  /**
+   * Choose between streaming (preferred — works on Vercel Edge for gpt-oss-120b)
+   * and non-streaming (fallback). Wraps each call with phase logging.
+   */
+  private async callLLMJSON<T>(
+    prompt: string,
+    phaseLabel: string,
+  ): Promise<T> {
+    // Try streaming first. If it throws, the caller's callWithRetryAwareness
+    // wrapper will surface a user-friendly error.
+    return await this.client.chatJSONStream<T>(
+      prompt,
+      SYSTEM_PROMPT,
+      this.streamCallbacks.onLog,
+      this.streamCallbacks.onChunk,
+      phaseLabel,
+    );
   }
 
   private emit(
@@ -235,7 +264,7 @@ Return JSON: { "nodes": [{ "id": "c1", "title": "...", "summary": "...", "tags":
 Raw notes:${contextHint}
 ${chunk}`;
 
-    const result = await this.client.chatJSON<ExtractResult>(prompt, SYSTEM_PROMPT);
+    const result = await this.callLLMJSON<ExtractResult>(prompt, `Extract (section ${chunkIndex + 1}/${totalChunks})`);
 
     if (!result.nodes || !Array.isArray(result.nodes)) {
       throw new Error("Extract step returned invalid nodes array");
@@ -374,7 +403,7 @@ Fix rules:
 
 Return JSON: { "nodes": [{ "id": "c1", "title": "...", "summary": "...", "tags": ["..."] }] }`;
 
-    const result = await this.client.chatJSON<ExtractResult>(prompt, SYSTEM_PROMPT);
+    const result = await this.callLLMJSON<ExtractResult>(prompt, "Extract (refinement)");
 
     if (!result.nodes || !Array.isArray(result.nodes)) {
       throw new Error("Extract refinement returned invalid nodes array");
@@ -422,7 +451,7 @@ Return JSON: { "edges": [{ "source": "nodeId", "target": "nodeId", "label": "ver
 Nodes (id: title):
 ${nodeSummary}`;
 
-    const result = await this.client.chatJSON<LinkResult>(prompt, SYSTEM_PROMPT);
+    const result = await this.callLLMJSON<LinkResult>(prompt, "Link");
 
     // Validate edges reference existing nodes
     const nodeIds = new Set(extracted.nodes.map((n) => n.id));
@@ -491,10 +520,7 @@ Graph: ${JSON.stringify(graphCompact)}
 Return JSON: { "score": 0.85, "issues": ["..."], "suggestions": ["..."] }
 Only list issues affecting MEANING or STRUCTURE.`;
 
-    const result = await this.client.chatJSON<ValidationResult>(
-      prompt,
-      SYSTEM_PROMPT
-    );
+    const result = await this.callLLMJSON<ValidationResult>(prompt, "Validate");
 
     return {
       score:
@@ -538,7 +564,7 @@ ${issues.map((i) => `- ${i}`).join("\n")}
 
 Current graph: ${JSON.stringify(graphCompact)}`;
 
-    const result = await this.client.chatJSON<LinkResult>(prompt, SYSTEM_PROMPT);
+    const result = await this.callLLMJSON<LinkResult>(prompt, "Refine");
 
     // Validate and normalise the refined result
     const nodeIds = new Set((result.nodes || []).map((n) => n.id));

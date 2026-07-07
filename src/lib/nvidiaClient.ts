@@ -28,6 +28,125 @@ export class NvidiaClient {
   }
 
   /**
+   * Streaming chat — calls /api/nvidia-stream (SSE) and emits live events
+   * via the onLog/onChunk callbacks. Returns the final content string.
+   *
+   * This is the preferred path for gpt-oss-120b on Vercel because:
+   *   1. Edge runtime works for gpt-oss-120b (Node serverless hangs)
+   *   2. Per-call 12s timeout + 1 retry fails fast with clear errors
+   *   3. Live log/chunk events let the UI show progress in real time
+   *
+   * Falls back to the non-streaming chat() if the SSE endpoint itself
+   * fails (e.g. 4xx error from the route).
+   */
+  async chatStream(
+    userPrompt: string,
+    systemPrompt: string | undefined,
+    onLog?: (line: string) => void,
+    onChunk?: (text: string) => void,
+    phaseLabel?: string,
+  ): Promise<string> {
+    const messages: { role: "system" | "user"; content: string }[] = [];
+    if (systemPrompt) messages.push({ role: "system", content: systemPrompt });
+    messages.push({ role: "user", content: userPrompt });
+
+    if (phaseLabel) {
+      onLog?.(`[pipeline] ${phaseLabel} — calling /api/nvidia-stream`);
+    }
+
+    const response = await fetch("/api/nvidia-stream", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        apiKey: this.apiKey,
+        model: this.model,
+        messages,
+        temperature: 0.7,
+        max_tokens: 32768,
+      }),
+    });
+
+    if (!response.ok || !response.body) {
+      const errText = await response.text().catch(() => "(no body)");
+      throw new Error(`Stream request failed (HTTP ${response.status}): ${errText.slice(0, 200)}`);
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let content = "";
+    let errorMessage: string | null = null;
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      let sepIdx;
+      while ((sepIdx = buffer.indexOf("\n\n")) !== -1) {
+        const raw = buffer.slice(0, sepIdx);
+        buffer = buffer.slice(sepIdx + 2);
+        for (const line of raw.split("\n")) {
+          if (!line.startsWith("data:")) continue;
+          const data = line.slice(5).trim();
+          if (!data) continue;
+          try {
+            const ev = JSON.parse(data);
+            if (ev.type === "log" && typeof ev.line === "string") {
+              onLog?.(ev.line);
+            } else if (ev.type === "chunk" && typeof ev.text === "string") {
+              content += ev.text;
+              onChunk?.(ev.text);
+            } else if (ev.type === "stage-end" && ev.content) {
+              // Server sends the final accumulated content as a safety net
+              content = ev.content as string;
+            } else if (ev.type === "error" && typeof ev.message === "string") {
+              errorMessage = ev.message;
+            }
+          } catch {
+            // ignore malformed lines
+          }
+        }
+      }
+    }
+
+    if (errorMessage) {
+      throw new Error(errorMessage);
+    }
+    if (!content) {
+      throw new Error("Stream ended without content");
+    }
+    return content;
+  }
+
+  /**
+   * Streaming variant of chatJSON — calls chatStream and parses the result.
+   * Same recovery chain as chatJSON (parseLLMJson → recoverTruncatedJSON).
+   */
+  async chatJSONStream<T>(
+    userPrompt: string,
+    systemPrompt: string | undefined,
+    onLog?: (line: string) => void,
+    onChunk?: (text: string) => void,
+    phaseLabel?: string,
+  ): Promise<T> {
+    const raw = await this.chatStream(userPrompt, systemPrompt, onLog, onChunk, phaseLabel);
+    try {
+      return parseLLMJson<T>(raw);
+    } catch (parseError) {
+      const recovered = recoverTruncatedJSON<T>(raw);
+      if (recovered !== null) {
+        console.warn(`[NvidiaClient] Recovered truncated JSON (${raw.length} chars, keys: ${Object.keys(recovered as object).join(", ")})`);
+        return recovered;
+      }
+      const errMsg = parseError instanceof Error ? parseError.message : String(parseError);
+      throw new Error(
+        `${errMsg}\nRecovery attempted on ${raw.length}-character response but could not extract valid JSON.`,
+      );
+    }
+  }
+
+  /**
    * Send a chat completion request through our server-side proxy.
    * The proxy forwards to Nvidia NIM API, bypassing CORS.
    * Handles reasoning models that return output in reasoning_content.

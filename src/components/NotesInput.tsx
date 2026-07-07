@@ -24,6 +24,8 @@ export function NotesInput({ onGraphGenerated }: NotesInputProps) {
     addIterationLog,
     resetPipeline,
     setSelectedNodeId,
+    addLiveEvent,
+    appendLiveText,
   } = useGraphStore();
 
   const handleGenerate = async () => {
@@ -34,7 +36,7 @@ export function NotesInput({ onGraphGenerated }: NotesInputProps) {
 
     setPipelineError(null);
     setIsRunning(true);
-    resetPipeline();
+    resetPipeline(); // also clears liveEvents + liveText
 
     try {
       const pipeline = new AXPipeline(
@@ -42,7 +44,18 @@ export function NotesInput({ onGraphGenerated }: NotesInputProps) {
         config.model,
         (log) => {
           addIterationLog(log);
-        }
+        },
+        {
+          // Stream live events from /api/nvidia-stream into the store.
+          // These power the dark terminal-style log viewer in PipelineStatus.
+          onLog: (line) => {
+            addLiveEvent({ ts: Date.now(), type: "log", line });
+          },
+          onChunk: (text) => {
+            addLiveEvent({ ts: Date.now(), type: "chunk", text });
+            appendLiveText(text);
+          },
+        },
       );
 
       const result = await pipeline.run(

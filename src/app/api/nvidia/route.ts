@@ -2,14 +2,25 @@ import { NextRequest, NextResponse } from "next/server";
 
 const NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1";
 
+// Edge runtime — Vercel's Node serverless path silently hangs on
+// openai/gpt-oss-120b (confirmed via extensive testing on the sister
+// project ax-translator). Edge uses a different egress that works for
+// gpt-oss-120b (~60-70% success rate; /api/nvidia-stream has live retry).
+// This non-streaming endpoint is kept as a fallback.
+export const maxDuration = 30;
+export const runtime = "edge";
+export const dynamic = "force-dynamic";
+
 // ─── API Key Resolution ─────────────────────────────────────
 // Priority: client-provided key > NVIDIA_API_KEY env var
 // For Vercel deployment: set NVIDIA_API_KEY in your project's
 // Environment Variables dashboard and no client config is needed.
 
 // ─── Retry Configuration ────────────────────────────────────
-const MAX_RETRIES = 3;
-const RETRY_DELAY_MS = 15_000; // 15 seconds between retry attempts
+// Edge runtime cap is 30s. With 2s backoff × 2 retries we still leave
+// room for one full NVIDIA call (~5-10s on gpt-oss-120b).
+const MAX_RETRIES = 2;
+const RETRY_DELAY_MS = 2_000;
 
 /**
  * Status codes that warrant a retry (transient / rate-limit errors).
@@ -105,7 +116,7 @@ export async function POST(request: NextRequest) {
       messages,
       temperature: temperature ?? 0.7,
       max_tokens: max_tokens ?? 32768,
-      stream: false,
+      stream: true, // Streaming required — gpt-oss-120b hangs on Vercel with stream:false
     });
 
     // ─── Retry Loop ───────────────────────────────────────────
@@ -146,13 +157,73 @@ export async function POST(request: NextRequest) {
 
       // ─── Success ───────────────────────────────────────────
       if (nvidiaResponse.ok) {
-        const data = await nvidiaResponse.json();
-
-        // Handle reasoning models: prefer content, fall back to reasoning_content
-        const message = data.choices?.[0]?.message;
-        if (message && !message.content && message.reasoning_content) {
-          message.content = message.reasoning_content;
+        // Stream the response body and accumulate chunks into a final
+        // chat.completion-shaped object so the existing client code
+        // (which expects response.choices[0].message.content) keeps working.
+        if (!nvidiaResponse.body) {
+          return NextResponse.json(
+            { error: "NVIDIA API returned no body" },
+            { status: 502 },
+          );
         }
+
+        const reader = nvidiaResponse.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        let content = "";
+        let reasoning = "";
+        let modelEcho = model;
+        let finishReason: string | null = null;
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          let nlIdx;
+          while ((nlIdx = buffer.indexOf("\n")) !== -1) {
+            const line = buffer.slice(0, nlIdx).trim();
+            buffer = buffer.slice(nlIdx + 1);
+            if (!line || !line.startsWith("data:")) continue;
+            const data = line.slice(5).trim();
+            if (data === "[DONE]") continue;
+            try {
+              const json = JSON.parse(data);
+              if (json.model) modelEcho = json.model;
+              const delta = json.choices?.[0]?.delta;
+              const fr = json.choices?.[0]?.finish_reason;
+              if (fr) finishReason = fr;
+              if (delta) {
+                if (typeof delta.content === "string") content += delta.content;
+                if (typeof delta.reasoning_content === "string") reasoning += delta.reasoning_content;
+              }
+            } catch {
+              // partial JSON across chunks
+            }
+          }
+        }
+
+        // Reasoning models (e.g. GPT-OSS 120B) sometimes put the actual
+        // output in reasoning_content when content is empty.
+        const finalContent = content || reasoning || "";
+
+        const data = {
+          id: `chatcmpl-edge-${Date.now()}`,
+          object: "chat.completion",
+          created: Math.floor(Date.now() / 1000),
+          model: modelEcho,
+          choices: [
+            {
+              index: 0,
+              message: {
+                role: "assistant",
+                content: finalContent,
+                reasoning_content: reasoning || null,
+              },
+              finish_reason: finishReason || "stop",
+            },
+          ],
+          usage: null,
+        };
 
         // Attach retry metadata (useful for client awareness)
         if (attempt > 1) {

@@ -15,6 +15,20 @@ import type { NodeCardData } from "@/lib/types";
 // Users can optionally provide their own key via the UI as an override.
 const DEFAULT_API_KEY = "";
 
+// ─── Live SSE event (from /api/nvidia-stream) ─────────────────
+export type LiveEvent = {
+  ts: number;
+  type: string;            // stage-start | log | chunk | stage-end | error
+  line?: string;           // for log
+  text?: string;           // for chunk
+  stage?: string;          // for stage-start/stage-end
+  ok?: boolean;            // for stage-end
+  elapsedMs?: number;      // for stage-end
+  attempts?: number;       // for stage-end
+  content?: string;        // for stage-end (final content safety net)
+  message?: string;        // for error
+};
+
 // ─── Store Interface ─────────────────────────────────────────
 
 interface GraphStore {
@@ -32,6 +46,15 @@ interface GraphStore {
   pipelineError: string | null;
   pipelineScore: number;
   pipelineAttempts: number;
+
+  // Live streaming state (SSE from /api/nvidia-stream)
+  liveEvents: LiveEvent[];
+  liveText: string;
+  showLiveLog: boolean;
+  addLiveEvent: (ev: LiveEvent) => void;
+  appendLiveText: (text: string) => void;
+  clearLiveState: () => void;
+  setShowLiveLog: (show: boolean) => void;
 
   // Graph data
   flowNodes: Node<NodeCardData>[];
@@ -110,6 +133,15 @@ export const useGraphStore = create<GraphStore>((set, get) => ({
   pipelineScore: 0,
   pipelineAttempts: 0,
 
+  // Live streaming state
+  liveEvents: [],
+  liveText: "",
+  showLiveLog: true,
+  addLiveEvent: (ev) => set((state) => ({ liveEvents: [...state.liveEvents, ev] })),
+  appendLiveText: (text) => set((state) => ({ liveText: state.liveText + text })),
+  clearLiveState: () => set({ liveEvents: [], liveText: "" }),
+  setShowLiveLog: (show) => set({ showLiveLog: show }),
+
   // Graph
   flowNodes: [],
   flowEdges: [],
@@ -146,6 +178,8 @@ export const useGraphStore = create<GraphStore>((set, get) => ({
       flowNodes: [],
       flowEdges: [],
       selectedNodeId: null,
+      liveEvents: [],
+      liveText: "",
     }),
 
   importGraphFromJSON: (json: string) => {

@@ -4,6 +4,7 @@ import { useGraphStore } from "@/store/graphStore";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { LivePipelineLog } from "@/components/LivePipelineLog";
 import {
   CheckCircle2,
   XCircle,
@@ -66,6 +67,8 @@ export function PipelineStatus() {
     pipelineAttempts,
     pipelineError,
     isRunning,
+    liveEvents,
+    liveText,
   } = useGraphStore();
 
   const lastLog = iterationLogs[iterationLogs.length - 1];
@@ -122,6 +125,19 @@ export function PipelineStatus() {
             )}
           </div>
         )}
+
+        {/* Live streamed text — appears token-by-token as chunks arrive */}
+        {isRunning && liveText && (
+          <div className="rounded-md bg-[#12122a] border border-[#2a2a5a] p-2.5 max-h-[140px] overflow-y-auto">
+            <p className="text-[11px] font-mono text-[#c8c8ee] leading-relaxed whitespace-pre-wrap break-words">
+              {liveText.slice(-800)}
+              <span className="inline-block w-1.5 h-3 ml-0.5 bg-indigo-400 animate-pulse align-text-bottom" />
+            </p>
+          </div>
+        )}
+
+        {/* Live event log — dark terminal-style, shows every NVIDIA call */}
+        {isRunning && liveEvents.length > 0 && <LivePipelineLog />}
 
         {/* Quality / Semantic Fidelity Score */}
         <div className="space-y-1">
