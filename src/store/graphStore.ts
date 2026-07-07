@@ -75,21 +75,47 @@ interface GraphStore {
 
 // ─── Persist API key to localStorage ────────────────────────
 
+// Defaults: 1 iteration, threshold 0.3.
+// - 1 iteration = EXTRACT → LINK → VALIDATE only (no REFINE loop).
+//   Chosen because gpt-oss-120b typically produces good-enough graphs in
+//   one pass; refining burns 2 extra NVIDIA calls (which are flaky from
+//   Vercel) for marginal quality gain.
+// - 0.3 threshold = accept almost any score. Since we only do 1 iteration,
+//   we don't want to reject the graph and force a refine that won't happen.
+//   Users can bump these up in the ConfigBar for higher-quality runs.
+const DEFAULT_ITERATIONS = 1;
+const DEFAULT_THRESHOLD = 0.3;
+
 function loadStoredConfig(): AppConfig {
   if (typeof window === "undefined") {
     return {
       apiKey: DEFAULT_API_KEY,
       model: "openai/gpt-oss-120b",
-      iterations: 3,
-      confidenceThreshold: 0.75,
+      iterations: DEFAULT_ITERATIONS,
+      confidenceThreshold: DEFAULT_THRESHOLD,
     };
   }
   try {
     const stored = localStorage.getItem("atomic-graph-config");
     if (stored) {
       const parsed = JSON.parse(stored);
-      // Always ensure model is the current default
-      return { ...parsed, model: "openai/gpt-oss-120b" };
+      // Always ensure model is the current default.
+      // Also clamp iterations/threshold to the new defaults if the stored
+      // values are missing or out of range (older clients may have 3 / 0.75).
+      return {
+        ...parsed,
+        model: "openai/gpt-oss-120b",
+        iterations:
+          typeof parsed.iterations === "number" && parsed.iterations >= 1 && parsed.iterations <= 5
+            ? parsed.iterations
+            : DEFAULT_ITERATIONS,
+        confidenceThreshold:
+          typeof parsed.confidenceThreshold === "number" &&
+          parsed.confidenceThreshold >= 0 &&
+          parsed.confidenceThreshold <= 1
+            ? parsed.confidenceThreshold
+            : DEFAULT_THRESHOLD,
+      };
     }
   } catch {
     // ignore
@@ -97,8 +123,8 @@ function loadStoredConfig(): AppConfig {
   return {
     apiKey: DEFAULT_API_KEY,
     model: "openai/gpt-oss-120b",
-    iterations: 3,
-    confidenceThreshold: 0.75,
+    iterations: DEFAULT_ITERATIONS,
+    confidenceThreshold: DEFAULT_THRESHOLD,
   };
 }
 
