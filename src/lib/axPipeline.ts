@@ -137,13 +137,16 @@ export class AXPipeline {
   }
 
   /**
-   * Compute backoff delay BEFORE a retry attempt. Returns 0 for timeout
-   * errors (we already waited 18s for the timeout — no need to add more
-   * delay) and 10-15s for rate-limit errors (gives NVIDIA time to reset).
+   * Compute backoff delay BEFORE a retry attempt.
    *
-   * This is the key fix: previously all retries were immediate, so 3
-   * rate-limited attempts would fail in ~2s with zero recovery time.
-   * Now rate-limit retries get a 10-15s pause.
+   * IMPORTANT: NVIDIA's rate-limiting doesn't always return a clean 429.
+   * Sometimes it just hangs the connection until our 18s timeout fires.
+   * So a timeout (AbortError) is OFTEN rate-limit-induced, and we should
+   * still back off before retrying.
+   *
+   * - Rate-limit (429) errors: 10s backoff
+   * - Timeout (AbortError):    5s backoff (was 0s — too aggressive)
+   * - Other errors:            5s backoff
    */
   private computeRetryBackoff(errorMsg: string): { delayMs: number; reason: string } {
     const msg = (errorMsg || "").toLowerCase();
@@ -158,14 +161,12 @@ export class AXPipeline {
       msg.includes("timed out");
 
     if (isRateLimit) {
-      // 10s — rate limits usually clear in 5-15s
       return { delayMs: 10_000, reason: "rate-limit backoff" };
     }
     if (isTimeout) {
-      // 0s — we already waited 18s for the timeout, no need to add more
-      return { delayMs: 0, reason: "no backoff (timeout already waited)" };
+      // 5s — timeout may be rate-limit-induced hang, give NVIDIA some room
+      return { delayMs: 5_000, reason: "timeout backoff (may be rate-limit-induced)" };
     }
-    // 5s — generic backoff for other errors
     return { delayMs: 5_000, reason: "backoff" };
   }
 
@@ -801,6 +802,30 @@ Current graph: ${JSON.stringify(graphCompact)}`;
         }
       }
 
+      // ─── Pre-LINK cooldown ──────────────────────────────────────
+      // EXTRACT just burned NVIDIA rate-limit budget. LINK runs immediately
+      // after and often fails because the rate-limit window hasn't reset.
+      // Wait 10s (or 30s if EXTRACT had retries) before starting LINK.
+      {
+        const preLinkDelay = 10_000; // 10s default cooldown before LINK
+        this.emit(
+          "retrying",
+          attempt,
+          0,
+          false,
+          undefined,
+          `Cooldown: waiting 10s before LINK (lets NVIDIA rate-limit window reset after EXTRACT)…`,
+        );
+        await this.sleep(preLinkDelay);
+        this.emit(
+          "linking",
+          attempt,
+          0,
+          false,
+          undefined,
+        );
+      }
+
       // ─── Step 2: LINK — surface hidden relationships ─────────────
       // LINK is mandatory — a graph without edges is useless. If all 3
       // attempts fail, we throw and the pipeline stops (no validate, no
@@ -809,8 +834,7 @@ Current graph: ${JSON.stringify(graphCompact)}`;
       //
       // Each /api/nvidia-stream call has an 18s timeout × 1 attempt.
       // Rate-limit-aware backoff between retries: 10s for 429 errors,
-      // 0s for timeouts (we already waited 18s).
-      this.emit("linking", attempt, 0, false);
+      // 5s for timeouts (may be rate-limit-induced hangs).
       let linked: LinkResult | null = null;
       const MAX_LINK_ATTEMPTS = 3;
       let lastLinkError = "";
