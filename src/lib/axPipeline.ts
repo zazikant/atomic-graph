@@ -614,7 +614,19 @@ Return JSON: { "nodes": [{ "id": "c1", "title": "...", "summary": "...", "tags":
   // ─── Step 2: LINK — surface hidden relationships ──────────────
 
   private async link(extracted: ExtractResult): Promise<LinkResult> {
-    const nodeSummary = extracted.nodes
+    // Cap the number of nodes sent to LINK. With 50+ nodes, gpt-oss-120b
+    // takes 20-30s to reason through all possible relationships and hits
+    // our 28s timeout. 30 nodes is the sweet spot: enough to capture the
+    // important relationships, fast enough to complete reliably.
+    //
+    // We keep the first 30 nodes (EXTRACT usually returns them in order of
+    // importance, so the first 30 are the most central concepts).
+    const MAX_NODES_FOR_LINK = 30;
+    const nodesForLink = extracted.nodes.length > MAX_NODES_FOR_LINK
+      ? extracted.nodes.slice(0, MAX_NODES_FOR_LINK)
+      : extracted.nodes;
+
+    const nodeSummary = nodesForLink
       .map((n) => `${n.id}: ${n.title}`)
       .join("\n");
 
