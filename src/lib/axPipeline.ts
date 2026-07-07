@@ -414,56 +414,83 @@ ${chunk}`;
         `Extracting section ${i + 1} of ${chunks.length}…`,
       );
 
-      // Per-chunk retry loop (matches LINK step pattern).
-      // Each /api/nvidia-stream call has an 18s timeout × 1 attempt.
-      // We retry up to 3 times at the pipeline level to push per-chunk
-      // success rate from ~60% to ~94%.
+      // Per-chunk retry with "second round" recovery.
+      // Round 1: 3 attempts with 5-10s backoff between each.
+      // If all 3 fail: 30s cooldown, then Round 2: 3 more attempts.
+      // The 30s cooldown is the key — it's what allows NVIDIA's rate-limit
+      // window to fully reset (5s wasn't enough, as seen in production).
       const MAX_CHUNK_ATTEMPTS = 3;
+      const MAX_CHUNK_ROUNDS = 2;
       let chunkResult: ExtractResult | null = null;
       let lastChunkError = "";
       let chunkSucceededOnAttempt = 0;
-      for (let chunkAttempt = 1; chunkAttempt <= MAX_CHUNK_ATTEMPTS; chunkAttempt++) {
-        try {
-          if (chunkAttempt > 1) {
-            // Rate-limit-aware backoff: 10s for rate limits, 0s for timeouts
-            const backoff = this.computeRetryBackoff(lastChunkError);
-            this.emit(
-              "retrying",
-              1,
-              0,
-              false,
-              undefined,
-              backoff.delayMs > 0
-                ? `Section ${i + 1} attempt ${chunkAttempt}/${MAX_CHUNK_ATTEMPTS} in ${backoff.delayMs / 1000}s (${backoff.reason})…`
-                : `Section ${i + 1} attempt ${chunkAttempt}/${MAX_CHUNK_ATTEMPTS} — retrying…`,
-            );
-            if (backoff.delayMs > 0) {
-              await this.sleep(backoff.delayMs);
-            }
-          }
-          chunkResult = await this.callWithRetryAwareness(
-            () => this.extractChunk(chunks[i], i, chunks.length),
+
+      for (let round = 1; round <= MAX_CHUNK_ROUNDS && chunkResult === null; round++) {
+        if (round > 1) {
+          // 30s cooldown before second round — gives NVIDIA's rate-limit
+          // window time to fully reset. This is the recovery time that
+          // the 5s inter-attempt backoff couldn't provide.
+          this.emit(
+            "retrying",
             1,
-            `Extract (section ${i + 1}/${chunks.length}${chunkAttempt > 1 ? `, retry ${chunkAttempt}` : ""})`,
+            0,
+            false,
+            undefined,
+            `Section ${i + 1} round 2/${MAX_CHUNK_ROUNDS}: 30s cooldown before retrying (NVIDIA rate-limit reset)…`,
           );
-          chunkSucceededOnAttempt = chunkAttempt;
-          lastChunkError = "";
-          break; // success
-        } catch (error) {
-          const msg = error instanceof Error ? error.message : String(error);
-          lastChunkError = msg;
-          console.warn(
-            `[AX Pipeline] Chunk ${i + 1}/${chunks.length} attempt ${chunkAttempt}/${MAX_CHUNK_ATTEMPTS} failed: ${msg}`,
+          await this.sleep(30_000);
+          this.emit(
+            "extracting",
+            1,
+            0,
+            false,
+            undefined,
+            `Section ${i + 1} round 2 — retrying after cooldown…`,
           );
-          if (chunkAttempt === MAX_CHUNK_ATTEMPTS) {
-            this.emit(
-              "retrying",
+        }
+
+        for (let chunkAttempt = 1; chunkAttempt <= MAX_CHUNK_ATTEMPTS; chunkAttempt++) {
+          try {
+            if (chunkAttempt > 1) {
+              const backoff = this.computeRetryBackoff(lastChunkError);
+              this.emit(
+                "retrying",
+                1,
+                0,
+                false,
+                undefined,
+                backoff.delayMs > 0
+                  ? `Section ${i + 1} round ${round} attempt ${chunkAttempt}/${MAX_CHUNK_ATTEMPTS} in ${backoff.delayMs / 1000}s (${backoff.reason})…`
+                  : `Section ${i + 1} round ${round} attempt ${chunkAttempt}/${MAX_CHUNK_ATTEMPTS} — retrying…`,
+              );
+              if (backoff.delayMs > 0) {
+                await this.sleep(backoff.delayMs);
+              }
+            }
+            chunkResult = await this.callWithRetryAwareness(
+              () => this.extractChunk(chunks[i], i, chunks.length),
               1,
-              0,
-              false,
-              undefined,
-              `Section ${i + 1} failed ${MAX_CHUNK_ATTEMPTS}× — skipping (will use remaining sections).`,
+              `Extract (section ${i + 1}/${chunks.length}, round ${round}${chunkAttempt > 1 ? `, retry ${chunkAttempt}` : ""})`,
             );
+            chunkSucceededOnAttempt = chunkAttempt;
+            lastChunkError = "";
+            break; // success
+          } catch (error) {
+            const msg = error instanceof Error ? error.message : String(error);
+            lastChunkError = msg;
+            console.warn(
+              `[AX Pipeline] Chunk ${i + 1}/${chunks.length} round ${round} attempt ${chunkAttempt}/${MAX_CHUNK_ATTEMPTS} failed: ${msg}`,
+            );
+            if (round === MAX_CHUNK_ROUNDS && chunkAttempt === MAX_CHUNK_ATTEMPTS) {
+              this.emit(
+                "retrying",
+                1,
+                0,
+                false,
+                undefined,
+                `Section ${i + 1} failed after ${MAX_CHUNK_ROUNDS} rounds × ${MAX_CHUNK_ATTEMPTS} attempts — skipping (will use remaining sections).`,
+              );
+            }
           }
         }
       }
