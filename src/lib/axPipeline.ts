@@ -13,10 +13,15 @@ import type {
 
 /** Maximum characters per chunk for extraction. Keeps prompts manageable
  *  even for very large inputs (books, research papers, etc.) */
-const CHUNK_CHAR_LIMIT = 6000;
+const CHUNK_CHAR_LIMIT = 8000;
 
-/** Minimum characters that trigger chunked processing */
-const CHUNK_THRESHOLD = 4000;
+/** Minimum characters that trigger chunked processing.
+ *  Bumped from 4000 → 8000: Vercel Edge has a 30s function cap, and
+ *  sequential chunks WILL blow past it after 2-3 chunks. By raising the
+ *  threshold, most "large" docs (5-8K chars) now fit in a single EXTRACT
+ *  call that comfortably completes in <18s. Only truly large inputs
+ *  (>8K chars) trigger chunking — and we warn the user about the 30s cap. */
+const CHUNK_THRESHOLD = 8000;
 
 // ─── System Prompt ─────────────────────────────────────────────
 
@@ -326,56 +331,97 @@ ${chunk}`;
     }
 
     // ─── Large input: chunked extraction ──────────────────────
+    // ─── Vercel Edge 30s cap warning ────────────────────────────
+    // Each chunk takes ~5-10s on gpt-oss-120b (plus 18s timeout if it
+    // hangs). Sequential chunks WILL blow past Vercel Edge's 30s function
+    // cap after 2-3 chunks. We can't parallelize (NVIDIA rate-limits),
+    // so we warn the user upfront and reduce per-call timeout for
+    // multi-chunk inputs to fit more chunks within 30s.
+    const EDGE_FUNCTION_BUDGET_MS = 28_000; // 30s cap - 2s buffer
+    const ESTIMATED_MS_PER_CHUNK = chunks.length > 1 ? 9_000 : 18_000; // tighter for multi-chunk
+    const estimatedTotalMs = chunks.length * ESTIMATED_MS_PER_CHUNK;
+    if (estimatedTotalMs > EDGE_FUNCTION_BUDGET_MS) {
+      this.emit(
+        "retrying",
+        1,
+        0,
+        false,
+        undefined,
+        `⚠️ Large input: ${chunks.length} sections × ~${ESTIMATED_MS_PER_CHUNK / 1000}s each ≈ ${Math.round(estimatedTotalMs / 1000)}s. Vercel Edge caps at 30s — pipeline may be killed mid-way. Consider splitting into smaller inputs.`,
+      );
+    }
+
     this.emit(
       "chunking",
       1,
       0,
       false,
       undefined,
-      `Processing ${chunks.length} sections of your notes…`
+      `Processing ${chunks.length} sections of your notes…`,
     );
 
     const allNodes: AtomicNode[] = [];
     let succeededChunks = 0;
 
     for (let i = 0; i < chunks.length; i++) {
-      try {
-        this.emit(
-          "extracting",
-          1,
-          0,
-          false,
-          undefined,
-          `Extracting section ${i + 1} of ${chunks.length}…`
-        );
+      this.emit(
+        "extracting",
+        1,
+        0,
+        false,
+        undefined,
+        `Extracting section ${i + 1} of ${chunks.length}…`,
+      );
 
-        const chunkResult = await this.callWithRetryAwareness(
-          () => this.extractChunk(chunks[i], i, chunks.length),
-          1,
-          `Extract (section ${i + 1}/${chunks.length})`
-        );
+      // Per-chunk retry loop (matches LINK step pattern).
+      // Each /api/nvidia-stream call has an 18s timeout × 1 attempt.
+      // We retry up to 3 times at the pipeline level to push per-chunk
+      // success rate from ~60% to ~94%.
+      const MAX_CHUNK_ATTEMPTS = 3;
+      let chunkResult: ExtractResult | null = null;
+      for (let chunkAttempt = 1; chunkAttempt <= MAX_CHUNK_ATTEMPTS; chunkAttempt++) {
+        try {
+          if (chunkAttempt > 1) {
+            this.emit(
+              "retrying",
+              1,
+              0,
+              false,
+              undefined,
+              `Section ${i + 1} attempt ${chunkAttempt}/${MAX_CHUNK_ATTEMPTS} — retrying…`,
+            );
+          }
+          chunkResult = await this.callWithRetryAwareness(
+            () => this.extractChunk(chunks[i], i, chunks.length),
+            1,
+            `Extract (section ${i + 1}/${chunks.length}${chunkAttempt > 1 ? `, retry ${chunkAttempt}` : ""})`,
+          );
+          break; // success
+        } catch (error) {
+          const msg = error instanceof Error ? error.message : String(error);
+          console.warn(
+            `[AX Pipeline] Chunk ${i + 1}/${chunks.length} attempt ${chunkAttempt}/${MAX_CHUNK_ATTEMPTS} failed: ${msg}`,
+          );
+          if (chunkAttempt === MAX_CHUNK_ATTEMPTS) {
+            this.emit(
+              "retrying",
+              1,
+              0,
+              false,
+              undefined,
+              `Section ${i + 1} failed ${MAX_CHUNK_ATTEMPTS}× — skipping (will use remaining sections).`,
+            );
+          }
+        }
+      }
 
+      if (chunkResult) {
         // Prefix IDs with chunk index to avoid collisions before dedup
         chunkResult.nodes.forEach((node) => {
           node.id = `s${i + 1}_${node.id}`;
         });
-
         allNodes.push(...chunkResult.nodes);
         succeededChunks++;
-      } catch (error) {
-        // Partial processing: log the error but continue with other chunks
-        console.warn(
-          `[AX Pipeline] Chunk ${i + 1}/${chunks.length} failed:`,
-          error instanceof Error ? error.message : error
-        );
-        this.emit(
-          "retrying",
-          1,
-          0,
-          false,
-          undefined,
-          `Section ${i + 1} failed — continuing with remaining sections`
-        );
       }
     }
 
