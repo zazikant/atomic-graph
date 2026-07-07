@@ -7,6 +7,7 @@ import type {
   PipelineResult,
   IterationLog,
   NvidiaModel,
+  GraphEdge,
 } from "./types";
 
 // ─── Constants ─────────────────────────────────────────────────
@@ -614,23 +615,145 @@ Return JSON: { "nodes": [{ "id": "c1", "title": "...", "summary": "...", "tags":
   // ─── Step 2: LINK — surface hidden relationships ──────────────
 
   private async link(extracted: ExtractResult): Promise<LinkResult> {
-    // Cap the number of nodes sent to LINK. With 50+ nodes, gpt-oss-120b
-    // takes 20-30s to reason through all possible relationships and hits
-    // our 28s timeout. 30 nodes is the sweet spot: enough to capture the
-    // important relationships, fast enough to complete reliably.
+    // ─── Batched LINK to handle large node counts ──────────────
+    // With 50+ nodes, a single LINK call takes 20-30s and often hits
+    // our 28s timeout. With 30 nodes, it completes in ~9s.
     //
-    // We keep the first 30 nodes (EXTRACT usually returns them in order of
-    // importance, so the first 30 are the most central concepts).
-    const MAX_NODES_FOR_LINK = 30;
-    const nodesForLink = extracted.nodes.length > MAX_NODES_FOR_LINK
-      ? extracted.nodes.slice(0, MAX_NODES_FOR_LINK)
-      : extracted.nodes;
+    // Solution: batch nodes into groups of 30, run LINK on each batch,
+    // then merge all edges. This way:
+    //   - Every node gets considered (no orphan nodes)
+    //   - Each LLM call stays fast (<10s)
+    //   - Cross-batch relationships are captured by also sending a
+    //     "summary of all nodes" with each batch (just IDs + titles)
+    //
+    // The summary is small (just IDs + titles, no summaries) so it
+    // doesn't bloat the prompt much but lets the LLM reference nodes
+    // outside its assigned batch.
+    const MAX_NODES_PER_LINK_BATCH = 30;
+    const allNodes = extracted.nodes;
 
-    const nodeSummary = nodesForLink
+    // Build a compact summary of ALL nodes (just id: title) to include
+    // in every batch prompt. This lets the LLM create cross-batch edges.
+    const allNodesSummary = allNodes
       .map((n) => `${n.id}: ${n.title}`)
       .join("\n");
 
-    const prompt = `Map relationships between these atomic concepts.
+    // Split nodes into batches
+    const batches: typeof allNodes[] = [];
+    for (let i = 0; i < allNodes.length; i += MAX_NODES_PER_LINK_BATCH) {
+      batches.push(allNodes.slice(i, i + MAX_NODES_PER_LINK_BATCH));
+    }
+
+    // For single batch (≤30 nodes), use the original simple prompt
+    if (batches.length === 1) {
+      const allNodeIds = new Set(allNodes.map((n) => n.id));
+      const edges = await this.linkSingleBatch(allNodes, allNodesSummary, allNodeIds);
+      return { nodes: allNodes, edges };
+    }
+
+    // Multiple batches: run LINK on each, merge edges
+    this.emit(
+      "linking",
+      1,
+      0,
+      false,
+      undefined,
+      `Large graph: ${allNodes.length} nodes — splitting LINK into ${batches.length} batches of ~${MAX_NODES_PER_LINK_BATCH}…`,
+    );
+
+    const allNodeIds = new Set(allNodes.map((n) => n.id));
+    const allEdges: GraphEdge[] = [];
+    for (let b = 0; b < batches.length; b++) {
+      this.emit(
+        "linking",
+        1,
+        0,
+        false,
+        undefined,
+        `LINK batch ${b + 1}/${batches.length} (${batches[b].length} nodes)…`,
+      );
+
+      const batchEdges = await this.linkSingleBatch(batches[b], allNodesSummary, allNodeIds, b + 1, batches.length);
+      allEdges.push(...batchEdges);
+    }
+
+    // Deduplicate edges (same source+target may appear in multiple batches)
+    const seen = new Set<string>();
+    const dedupedEdges = allEdges.filter((e) => {
+      // Also count reverse direction as duplicate (A→B same as B→A for dedup)
+      const key1 = `${e.source}->${e.target}`;
+      const key2 = `${e.target}->${e.source}`;
+      if (seen.has(key1) || seen.has(key2)) return false;
+      seen.add(key1);
+      return true;
+    });
+
+    this.emit(
+      "linking",
+      1,
+      0,
+      false,
+      undefined,
+      `LINK complete: ${dedupedEdges.length} edges from ${batches.length} batches (${allEdges.length} before dedup)`,
+    );
+
+    return {
+      nodes: allNodes,
+      edges: dedupedEdges,
+    };
+  }
+
+  /**
+   * Run LINK on a single batch of nodes. If batchNumber/totalBatches are
+   * provided, includes a "all nodes summary" so the LLM can create
+   * cross-batch edges.
+   *
+   * allNodeIds: the full set of valid node IDs (for edge validation).
+   * Edges referencing IDs outside this set are filtered out.
+   */
+  private async linkSingleBatch(
+    batchNodes: AtomicNode[],
+    allNodesSummary: string,
+    allNodeIds: Set<string>,
+    batchNumber?: number,
+    totalBatches?: number,
+  ): Promise<GraphEdge[]> {
+    const batchNodeSummary = batchNodes
+      .map((n) => `${n.id}: ${n.title}`)
+      .join("\n");
+
+    const isMultiBatch = batchNumber !== undefined && totalBatches !== undefined;
+
+    const prompt = isMultiBatch
+      ? `Map relationships between these atomic concepts.
+
+You are processing batch ${batchNumber} of ${totalBatches}. Focus on finding relationships AMONG the batch nodes below, but you may also create edges to ANY node in the full node list (provided for reference).
+
+Find both direct and implicit relationships:
+- Direct: A enables B, A requires B, A is a subtype of B
+- Implicit: A and B connected through unstated C
+- Causal: A leads to B which enables C
+
+Edge labels: use SPECIFIC verbs ("requires", "enables", "feeds into", "constrains", "extends"), NOT generic "related to".
+Keep labels to 1-3 words.
+
+Strength (0.0-1.0):
+- 0.9+: definitionally true
+- 0.7-0.9: strongly implied
+- 0.4-0.7: inferred bridge
+- 0.0-0.4: speculative
+
+Only create edges for REAL relationships. Do NOT fabricate connections.
+Return ONLY edges — do NOT repeat nodes.
+
+Return JSON: { "edges": [{ "source": "nodeId", "target": "nodeId", "label": "verb", "strength": 0.8 }] }
+
+BATCH NODES (find relationships among these):
+${batchNodeSummary}
+
+ALL NODES (for reference — you may create edges to any of these):
+${allNodesSummary}`
+      : `Map relationships between these atomic concepts.
 
 Find both direct and implicit relationships:
 - Direct: A enables B, A requires B, A is a subtype of B
@@ -652,20 +775,22 @@ Return ONLY edges — do NOT repeat nodes.
 Return JSON: { "edges": [{ "source": "nodeId", "target": "nodeId", "label": "verb", "strength": 0.8 }] }
 
 Nodes (id: title):
-${nodeSummary}`;
+${allNodesSummary}`;
 
-    const result = await this.callLLMJSON<LinkResult>(prompt, "Link");
+    const result = await this.callLLMJSON<LinkResult>(
+      prompt,
+      isMultiBatch ? `Link (batch ${batchNumber}/${totalBatches})` : "Link",
+    );
 
-    // Validate edges reference existing nodes
-    const nodeIds = new Set(extracted.nodes.map((n) => n.id));
+    // Validate edges reference existing nodes (from the FULL set, not just batch)
     const validEdges = (result.edges || [])
       .filter(
         (e) =>
           e.source &&
           e.target &&
-          nodeIds.has(e.source) &&
-          nodeIds.has(e.target) &&
-          e.source !== e.target
+          allNodeIds.has(e.source) &&
+          allNodeIds.has(e.target) &&
+          e.source !== e.target,
       )
       .map((e) => ({
         source: e.source,
@@ -677,10 +802,7 @@ ${nodeSummary}`;
             : 0.5,
       }));
 
-    return {
-      nodes: extracted.nodes,
-      edges: validEdges,
-    };
+    return validEdges;
   }
 
   // ─── Step 3: VALIDATE — quality-aware self-critique ───────────
