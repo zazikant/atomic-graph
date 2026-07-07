@@ -179,6 +179,10 @@ Return JSON: { "nodes": [{ "id": "c1", "title": "...", "summary": "...", "tags":
   // ─── Step 2: LINK — surface hidden relationships ──────────
 
   private async link(extracted: ExtractResult): Promise<LinkResult> {
+    const nodeSummary = extracted.nodes
+      .map((n) => `${n.id}: ${n.title}`)
+      .join("\n");
+
     const prompt = `You are mapping the RELATIONSHIPS between atomic concepts — both explicit and implicit.
 
 Given these atomic nodes, identify semantic relationships. Do NOT stop at surface-level "related to" links.
@@ -199,12 +203,11 @@ Strength (0.0-1.0): how certain and direct is this link?
 QUALITY RULE: Only create edges where a REAL semantic relationship exists.
 Do NOT fabricate connections just to make the graph look more connected.
 
-Return JSON: {
-  "nodes": [<same nodes as input>],
-  "edges": [{ "source": "nodeId", "target": "nodeId", "label": "specific relationship", "strength": 0.8 }]
-}
+IMPORTANT: Return ONLY the edges array — do NOT repeat the nodes.
+Return JSON: { "edges": [{ "source": "nodeId", "target": "nodeId", "label": "specific relationship", "strength": 0.8 }] }
 
-Nodes: ${JSON.stringify(extracted.nodes, null, 2)}`;
+Nodes (id: title):
+${nodeSummary}`;
 
     const result = await this.client.chatJSON<LinkResult>(prompt, SYSTEM_PROMPT);
 
@@ -238,6 +241,12 @@ Nodes: ${JSON.stringify(extracted.nodes, null, 2)}`;
   // ─── Step 3: VALIDATE — quality-aware self-critique ───────
 
   private async validate(graph: LinkResult): Promise<ValidationResult> {
+    // Use compact representation to save tokens (no pretty-printing, no content field)
+    const graphCompact = {
+      nodes: graph.nodes.map((n) => ({ id: n.id, title: n.title, summary: n.summary, tags: n.tags })),
+      edges: graph.edges.map((e) => ({ source: e.source, target: e.target, label: e.label, strength: e.strength })),
+    };
+
     const prompt = `You are critically evaluating a knowledge graph for BOTH quality AND semantic fidelity.
 
 The graph was built by reasoning through someone's raw notes. Your job is to judge whether the graph
@@ -272,7 +281,7 @@ If the only issues are minor wording changes that don't affect meaning, score 0.
 ORIGINAL NOTES (for comparison):
 ${this.rawNotes}
 
-Graph: ${JSON.stringify(graph, null, 2)}
+Graph: ${JSON.stringify(graphCompact)}
 
 Return JSON: {
   "score": 0.85,
@@ -302,6 +311,12 @@ Only list issues that AFFECT MEANING or STRUCTURE, not cosmetic wording differen
     graph: LinkResult,
     issues: string[]
   ): Promise<LinkResult> {
+    // Use compact representation to save tokens
+    const graphCompact = {
+      nodes: graph.nodes.map((n) => ({ id: n.id, title: n.title, summary: n.summary, tags: n.tags })),
+      edges: graph.edges.map((e) => ({ source: e.source, target: e.target, label: e.label, strength: e.strength })),
+    };
+
     const prompt = `The self-critique found these SPECIFIC issues in your knowledge graph.
 Fix ONLY these issues — do NOT rework everything.
 
@@ -314,13 +329,14 @@ CRITICAL QUALITY RULES:
 - If it says "concept not atomic", SPLIT it into two and link them.
 - Do NOT add speculative concepts that the writer didn't imply.
 
+IMPORTANT: Return the FULL corrected graph with both nodes and edges. Keep all existing nodes and edges that don't need changes. Only ADD or CHANGE what's needed to fix the listed issues.
+
+Return JSON: { "nodes": [{ "id": "c1", "title": "...", "summary": "...", "tags": ["..."] }], "edges": [{ "source": "nodeId", "target": "nodeId", "label": "...", "strength": 0.8 }] }
+
 Issues to fix:
 ${issues.map((i) => `- ${i}`).join("\n")}
 
-Current graph: ${JSON.stringify(graph, null, 2)}
-
-Return the corrected full graph JSON with both nodes and edges.
-Only ADD or CHANGE what's needed to fix the listed issues. Preserve everything else.`;
+Current graph: ${JSON.stringify(graphCompact)}`;
 
     const result = await this.client.chatJSON<LinkResult>(prompt, SYSTEM_PROMPT);
 

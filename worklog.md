@@ -103,3 +103,28 @@ Stage Summary:
 - Exported HTML now correctly initializes React Flow UMD bundle
 - jsxRuntime shim bridges the gap between React UMD and @xyflow/react UMD expectations
 - All components (nodes, edges, minimap, controls, drawer) should render correctly
+
+---
+Task ID: 7
+Agent: Main Agent
+Task: Fix LLM JSON parse failure — truncated response at ~7519 chars
+
+Work Log:
+- Root cause: GPT-OSS 120B reasoning model uses tokens for chain-of-thought (reasoning_content) BEFORE generating JSON (content). With max_tokens=4096, the JSON output gets truncated mid-sentence.
+- Increased max_tokens from 4096 to 16384 in both nvidiaClient.ts and proxy route.ts
+- Optimized LINK prompt: removed request to echo back all nodes (was doubling output size). Now sends only "id: title" summary and asks for edges-only JSON response
+- Optimized VALIDATE prompt: uses compact graph representation (no pretty-print, no content field) instead of JSON.stringify(graph, null, 2)
+- Optimized REFINE prompt: uses compact graph representation, explicit JSON format instruction
+- Added recoverTruncatedJSON() function: two-strategy recovery for truncated JSON
+  - Strategy 1: Close open brackets, remove trailing incomplete strings, re-parse
+  - Strategy 2: Extract complete individual objects from arrays (nodes, edges, issues, suggestions) by scanning for complete { } blocks
+- Added recoverArrayElements() helper: scans text for fully-formed JSON objects within arrays
+- chatJSON() now falls through to recovery before throwing on parse failure
+- Build verified passing
+
+Stage Summary:
+- max_tokens: 4096 → 16384 (4x increase) prevents most truncation
+- LINK step output reduced by ~60% (no node echoing, compact format)
+- VALIDATE/REFINE prompts use compact graph representation
+- Truncated JSON recovery: even if output is cut off, partial data is salvaged
+- Pipeline more resilient to reasoning model token budget issues
