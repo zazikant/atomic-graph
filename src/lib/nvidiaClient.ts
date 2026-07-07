@@ -54,7 +54,7 @@ export class NvidiaClient {
         model: this.model,
         messages,
         temperature: 0.7,
-        max_tokens: 16384,
+        max_tokens: 32768,
       }),
     });
 

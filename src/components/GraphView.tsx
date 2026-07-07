@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ReactFlow,
   ReactFlowProvider,
@@ -23,7 +23,7 @@ import type { NodeCardData } from "@/lib/types";
 import { toPng } from "html-to-image";
 import { generateHTMLExport } from "@/lib/exportHTML";
 import { Button } from "@/components/ui/button";
-import { Download, FileJson, Globe, Expand } from "lucide-react";
+import { Download, FileJson, Globe, Expand, Eye, EyeOff } from "lucide-react";
 
 // ─── Custom Animated Edge ────────────────────────────────────
 
@@ -35,6 +35,8 @@ function AnimatedEdge({
   style = {},
   markerEnd,
   label,
+  data,
+  showLabel = true,
 }: any) {
   const edgeColor = style.stroke || "#6366f1";
   const edgeWidth = style.strokeWidth || 1.5;
@@ -49,6 +51,9 @@ function AnimatedEdge({
   const controlY = midY + dx * curvature;
 
   const edgePath = `M ${sourceX} ${sourceY} Q ${controlX} ${controlY} ${targetX} ${targetY}`;
+
+  // Determine label text: prefer data.label, then label prop
+  const labelText = data?.label || label;
 
   return (
     <>
@@ -70,8 +75,8 @@ function AnimatedEdge({
         markerEnd={markerEnd}
         className="animated-edge"
       />
-      {/* Edge label */}
-      {label && (
+      {/* Edge label — only shown when showLabel is true */}
+      {showLabel && labelText && (
         <text
           x={midX}
           y={midY - 8}
@@ -79,9 +84,9 @@ function AnimatedEdge({
           className="text-[10px] fill-[#8888cc] font-mono"
           style={{ pointerEvents: "none" }}
         >
-          {typeof label === "string" && label.length > 20
-            ? label.slice(0, 18) + "…"
-            : label}
+          {typeof labelText === "string" && labelText.length > 20
+            ? labelText.slice(0, 18) + "…"
+            : labelText}
         </text>
       )}
     </>
@@ -92,10 +97,6 @@ function AnimatedEdge({
 
 const nodeTypes = {
   atomicCard: NodeCard,
-};
-
-const edgeTypes = {
-  animatedEdge: AnimatedEdge,
 };
 
 // ─── Inner Graph Canvas (uses useReactFlow inside provider) ──
@@ -111,6 +112,29 @@ function GraphCanvas() {
   const flowRef = useRef<HTMLDivElement>(null);
   const reactFlowInstance = useReactFlow();
   const prevNodeCountRef = useRef(0);
+
+  // Edge label visibility — auto-hide for large graphs (>30 edges)
+  const [showEdgeLabels, setShowEdgeLabels] = useState(true);
+
+  // Auto-hide labels when graph gets large
+  useEffect(() => {
+    if (flowEdges.length > 30 && showEdgeLabels) {
+      setShowEdgeLabels(false);
+    }
+    if (flowEdges.length <= 30 && !showEdgeLabels) {
+      setShowEdgeLabels(true);
+    }
+  }, [flowEdges.length]);
+
+  // Create edge types with label visibility
+  const edgeTypes = useMemo(
+    () => ({
+      animatedEdge: (props: any) => (
+        <AnimatedEdge {...props} showLabel={showEdgeLabels} />
+      ),
+    }),
+    [showEdgeLabels]
+  );
 
   const [nodes, setNodes, onNodesChange] = useNodesState(flowNodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(flowEdges);
@@ -204,7 +228,12 @@ function GraphCanvas() {
   // ─── Fit view options ─────────────────────────────────────
   const fitViewOptions = { padding: 0.2, duration: 800 };
 
-  if (flowNodes.length === 0) {
+  // ─── Graph size info ──────────────────────────────────────
+  const nodeCount = flowNodes.length;
+  const edgeCount = flowEdges.length;
+  const isLargeGraph = nodeCount > 20 || edgeCount > 30;
+
+  if (nodeCount === 0) {
     return (
       <div className="flex items-center justify-center h-full bg-[#0a0a1a]">
         <div className="text-center space-y-3">
@@ -236,7 +265,7 @@ function GraphCanvas() {
         edgeTypes={edgeTypes}
         fitView
         fitViewOptions={fitViewOptions}
-        minZoom={0.1}
+        minZoom={0.05}
         maxZoom={2}
         proOptions={{ hideAttribution: true }}
         style={{ background: "#0a0a1a" }}
@@ -264,8 +293,46 @@ function GraphCanvas() {
           className="!bottom-4 !right-4"
         />
 
-        {/* Export Panel */}
+        {/* Graph Stats — bottom left */}
+        <Panel position="bottom-left" className="flex items-center gap-2">
+          <div className="flex items-center gap-3 px-2.5 py-1.5 rounded-lg bg-[#1a1a3e]/80 border border-[#2a2a5a] backdrop-blur-sm">
+            <span className="text-[#8888cc] font-mono text-[10px]">
+              {nodeCount} nodes
+            </span>
+            <span className="text-[#3a3a6a]">·</span>
+            <span className="text-[#8888cc] font-mono text-[10px]">
+              {edgeCount} edges
+            </span>
+            {isLargeGraph && (
+              <>
+                <span className="text-[#3a3a6a]">·</span>
+                <span className="text-amber-400/70 font-mono text-[10px]">
+                  large graph
+                </span>
+              </>
+            )}
+          </div>
+        </Panel>
+
+        {/* Export & Controls Panel — top right */}
         <Panel position="top-right" className="flex gap-1.5">
+          {/* Edge labels toggle — only show for graphs with edges */}
+          {edgeCount > 0 && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setShowEdgeLabels(!showEdgeLabels)}
+              className="bg-[#1a1a3e] border-[#3a3a6a] text-[#c8c8ee] hover:bg-[#2a2a5a] hover:text-white font-mono text-xs h-7"
+              title={showEdgeLabels ? "Hide edge labels" : "Show edge labels"}
+            >
+              {showEdgeLabels ? (
+                <Eye className="w-3 h-3 mr-1" />
+              ) : (
+                <EyeOff className="w-3 h-3 mr-1" />
+              )}
+              Labels
+            </Button>
+          )}
           <Button
             variant="outline"
             size="sm"

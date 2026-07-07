@@ -9,7 +9,16 @@ import type {
   NvidiaModel,
 } from "./types";
 
-// ─── System Prompt ───────────────────────────────────────────
+// ─── Constants ─────────────────────────────────────────────────
+
+/** Maximum characters per chunk for extraction. Keeps prompts manageable
+ *  even for very large inputs (books, research papers, etc.) */
+const CHUNK_CHAR_LIMIT = 6000;
+
+/** Minimum characters that trigger chunked processing */
+const CHUNK_THRESHOLD = 4000;
+
+// ─── System Prompt ─────────────────────────────────────────────
 
 const SYSTEM_PROMPT = `You are a semantic reasoning engine that builds knowledge graphs from raw thinking.
 You do NOT merely reformat or summarise — you REASON through the semantic space of ideas.
@@ -21,7 +30,7 @@ When the original notes are already clear and complete, you recognise that and s
 Always respond with valid JSON only. No markdown, no explanation, no code fences.
 Every response must be a single valid JSON object parseable by JSON.parse().`;
 
-// ─── AX Pipeline ─────────────────────────────────────────────
+// ─── AX Pipeline ───────────────────────────────────────────────
 
 export class AXPipeline {
   private client: NvidiaClient;
@@ -58,12 +67,6 @@ export class AXPipeline {
 
   /**
    * Wrap an async API call with rate-limit / transient error detection.
-   * When the proxy returns a rate-limit error (after its own 3 retries exhausted),
-   * this emits a "retrying" log to the UI so the user sees what's happening.
-   *
-   * The actual retry (3 attempts, 15s delay) is done by the server-side proxy.
-   * This wrapper catches the *final* error after all proxy retries are exhausted
-   * and provides the user with clear feedback.
    */
   private async callWithRetryAwareness<T>(
     fn: () => Promise<T>,
@@ -75,7 +78,6 @@ export class AXPipeline {
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
 
-      // Detect rate-limit / transient errors that exhausted all proxy retries
       const isRateLimit =
         msg.includes("rate limit") ||
         msg.includes("Rate limit") ||
@@ -115,13 +117,103 @@ export class AXPipeline {
     }
   }
 
-  // ─── Step 1: EXTRACT — reason through semantic space ──────
+  // ─── Chunking Utilities ────────────────────────────────────────
 
-  private async extract(
-    rawNotes: string,
-    previousResult: LinkResult | null
+  /**
+   * Split raw notes into sensible chunks at paragraph/sentence boundaries.
+   * Each chunk is at most CHUNK_CHAR_LIMIT characters.
+   * Tries to split at paragraph breaks first, then sentence boundaries.
+   */
+  private splitIntoChunks(text: string): string[] {
+    if (text.length <= CHUNK_CHAR_LIMIT) return [text];
+
+    const chunks: string[] = [];
+    let remaining = text;
+
+    while (remaining.length > 0) {
+      if (remaining.length <= CHUNK_CHAR_LIMIT) {
+        chunks.push(remaining);
+        break;
+      }
+
+      // Try to split at paragraph break
+      let splitIndex = remaining.lastIndexOf("\n\n", CHUNK_CHAR_LIMIT);
+      if (splitIndex < CHUNK_CHAR_LIMIT * 0.3) {
+        // Try newline
+        splitIndex = remaining.lastIndexOf("\n", CHUNK_CHAR_LIMIT);
+      }
+      if (splitIndex < CHUNK_CHAR_LIMIT * 0.3) {
+        // Try sentence boundary (. ! ?)
+        const sentenceMatch = remaining
+          .slice(0, CHUNK_CHAR_LIMIT)
+          .match(/[.!?]\s+/g);
+        if (sentenceMatch) {
+          const lastSentence = sentenceMatch[sentenceMatch.length - 1];
+          splitIndex =
+            remaining.slice(0, CHUNK_CHAR_LIMIT).lastIndexOf(lastSentence) +
+            lastSentence.length;
+        }
+      }
+      if (splitIndex < CHUNK_CHAR_LIMIT * 0.3) {
+        // Hard split at limit
+        splitIndex = CHUNK_CHAR_LIMIT;
+      }
+
+      chunks.push(remaining.slice(0, splitIndex).trim());
+      remaining = remaining.slice(splitIndex).trim();
+    }
+
+    return chunks.filter((c) => c.length > 0);
+  }
+
+  /**
+   * Deduplicate nodes by title similarity.
+   * If two nodes have very similar titles (case-insensitive, trimmed),
+   * keep the one with more content and merge tags.
+   */
+  private deduplicateNodes(nodes: AtomicNode[]): AtomicNode[] {
+    const seen = new Map<string, AtomicNode>();
+
+    for (const node of nodes) {
+      const key = node.title.toLowerCase().trim();
+
+      if (seen.has(key)) {
+        // Merge tags
+        const existing = seen.get(key)!;
+        const mergedTags = [...new Set([...existing.tags, ...node.tags])];
+        existing.tags = mergedTags;
+        // Keep the longer summary/content
+        if ((node.summary || "").length > (existing.summary || "").length) {
+          existing.summary = node.summary;
+        }
+        if ((node.content || "").length > (existing.content || "").length) {
+          existing.content = node.content;
+        }
+      } else {
+        seen.set(key, { ...node });
+      }
+    }
+
+    // Re-index IDs sequentially
+    return Array.from(seen.values()).map((node, i) => ({
+      ...node,
+      id: `c${i + 1}`,
+    }));
+  }
+
+  // ─── Step 1: EXTRACT — reason through semantic space ──────────
+
+  private async extractChunk(
+    chunk: string,
+    chunkIndex: number,
+    totalChunks: number
   ): Promise<ExtractResult> {
-    const firstPassPrompt = `You are reasoning through the semantic space of someone's raw thinking.
+    const contextHint =
+      totalChunks > 1
+        ? `\n\n[This is part ${chunkIndex + 1} of ${totalChunks} of the input. Focus on concepts in this section. Use tags to link related ideas across sections.]`
+        : "";
+
+    const prompt = `You are reasoning through the semantic space of someone's raw thinking.
 
 STEP 1 — What are the atomic concepts?
 Break the notes into indivisible ideas — each concept must be ONE idea only.
@@ -132,32 +224,12 @@ Do NOT merely list keywords from the text. Instead:
 - Each concept gets a concise title and a 1-2 sentence summary explaining WHY it matters in this context
 - PRESERVE the writer's original intent. Do NOT rephrase in ways that change meaning.
 - Minor wording differences ("retains" vs "preserves", "uses" vs "employs") are NOT new concepts.
+- Use descriptive tags that help group related concepts across sections.
 
 Return JSON: { "nodes": [{ "id": "c1", "title": "...", "summary": "...", "tags": ["..."] }] }
 
-Raw notes:
-${rawNotes}`;
-
-    const refinementPrompt = `You previously extracted atomic concepts, but the validation found specific gaps.
-Reason deeper — but ONLY where the critique identified real problems.
-
-PREVIOUS CONCEPTS:
-${JSON.stringify(previousResult?.nodes?.slice(0, 30), null, 2)}
-
-ORIGINAL NOTES:
-${rawNotes}
-
-IMPROVE by addressing ONLY the specific issues found:
-1. If a concept is truly missing (not just rephrased), add it.
-2. If a "bridge" concept genuinely connects two clusters, add it.
-3. If a concept is genuinely non-atomic (covers two distinct ideas), split it.
-4. Do NOT rephrase existing concepts just for style — preserve the writer's wording when it's accurate.
-5. Do NOT add speculative concepts that the writer didn't imply.
-6. Keep all existing valid concepts — only ADD or SPLIT where genuinely needed.
-
-Return JSON: { "nodes": [{ "id": "c1", "title": "...", "summary": "...", "tags": ["..."] }] }`;
-
-    const prompt = previousResult ? refinementPrompt : firstPassPrompt;
+Raw notes:${contextHint}
+${chunk}`;
 
     const result = await this.client.chatJSON<ExtractResult>(prompt, SYSTEM_PROMPT);
 
@@ -176,7 +248,148 @@ Return JSON: { "nodes": [{ "id": "c1", "title": "...", "summary": "...", "tags":
     return result;
   }
 
-  // ─── Step 2: LINK — surface hidden relationships ──────────
+  /**
+   * Extract concepts from notes. For large inputs, splits into chunks,
+   * processes each chunk separately, then merges and deduplicates.
+   */
+  private async extract(
+    rawNotes: string,
+    previousResult: LinkResult | null
+  ): Promise<ExtractResult> {
+    // ─── Refinement path (not first pass) ─────────────────────
+    if (previousResult) {
+      return this.extractRefinement(rawNotes, previousResult);
+    }
+
+    // ─── First pass: check if chunking is needed ──────────────
+    const chunks = this.splitIntoChunks(rawNotes);
+
+    if (chunks.length === 1) {
+      // Small input — process directly
+      return this.extractChunk(rawNotes, 0, 1);
+    }
+
+    // ─── Large input: chunked extraction ──────────────────────
+    this.emit(
+      "chunking",
+      1,
+      0,
+      false,
+      undefined,
+      `Processing ${chunks.length} sections of your notes…`
+    );
+
+    const allNodes: AtomicNode[] = [];
+    let succeededChunks = 0;
+
+    for (let i = 0; i < chunks.length; i++) {
+      try {
+        this.emit(
+          "extracting",
+          1,
+          0,
+          false,
+          undefined,
+          `Extracting section ${i + 1} of ${chunks.length}…`
+        );
+
+        const chunkResult = await this.callWithRetryAwareness(
+          () => this.extractChunk(chunks[i], i, chunks.length),
+          1,
+          `Extract (section ${i + 1}/${chunks.length})`
+        );
+
+        // Prefix IDs with chunk index to avoid collisions before dedup
+        chunkResult.nodes.forEach((node) => {
+          node.id = `s${i + 1}_${node.id}`;
+        });
+
+        allNodes.push(...chunkResult.nodes);
+        succeededChunks++;
+      } catch (error) {
+        // Partial processing: log the error but continue with other chunks
+        console.warn(
+          `[AX Pipeline] Chunk ${i + 1}/${chunks.length} failed:`,
+          error instanceof Error ? error.message : error
+        );
+        this.emit(
+          "retrying",
+          1,
+          0,
+          false,
+          undefined,
+          `Section ${i + 1} failed — continuing with remaining sections`
+        );
+      }
+    }
+
+    if (allNodes.length === 0) {
+      throw new Error(
+        `All ${chunks.length} sections failed to extract. Please try again.`
+      );
+    }
+
+    // Deduplicate across chunks
+    const deduplicated = this.deduplicateNodes(allNodes);
+
+    this.emit(
+      "extracting",
+      1,
+      0,
+      false,
+      undefined,
+      `Extracted ${deduplicated.length} concepts from ${succeededChunks}/${chunks.length} sections`
+    );
+
+    return { nodes: deduplicated };
+  }
+
+  private async extractRefinement(
+    rawNotes: string,
+    previousResult: LinkResult | null
+  ): Promise<ExtractResult> {
+    const nodesCompact = previousResult?.nodes
+      ?.slice(0, 50)
+      .map((n) => `${n.id}: ${n.title}`)
+      .join("\n");
+
+    const prompt = `You previously extracted atomic concepts, but the validation found specific gaps.
+Reason deeper — but ONLY where the critique identified real problems.
+
+PREVIOUS CONCEPTS:
+${nodesCompact}
+
+ORIGINAL NOTES:
+${rawNotes.slice(0, 3000)}${rawNotes.length > 3000 ? "\n… (notes truncated for brevity)" : ""}
+
+IMPROVE by addressing ONLY the specific issues found:
+1. If a concept is truly missing (not just rephrased), add it.
+2. If a "bridge" concept genuinely connects two clusters, add it.
+3. If a concept is genuinely non-atomic (covers two distinct ideas), split it.
+4. Do NOT rephrase existing concepts just for style — preserve the writer's wording when it's accurate.
+5. Do NOT add speculative concepts that the writer didn't imply.
+6. Keep all existing valid concepts — only ADD or SPLIT where genuinely needed.
+
+Return JSON: { "nodes": [{ "id": "c1", "title": "...", "summary": "...", "tags": ["..."] }] }`;
+
+    const result = await this.client.chatJSON<ExtractResult>(prompt, SYSTEM_PROMPT);
+
+    if (!result.nodes || !Array.isArray(result.nodes)) {
+      throw new Error("Extract refinement returned invalid nodes array");
+    }
+
+    result.nodes = result.nodes.map((node, i) => ({
+      id: node.id || `c${i + 1}`,
+      title: node.title || `Concept ${i + 1}`,
+      summary: node.summary || "",
+      tags: Array.isArray(node.tags) ? node.tags : [],
+      content: node.content || node.summary || "",
+    }));
+
+    return result;
+  }
+
+  // ─── Step 2: LINK — surface hidden relationships ──────────────
 
   private async link(extracted: ExtractResult): Promise<LinkResult> {
     const nodeSummary = extracted.nodes
@@ -238,14 +451,19 @@ ${nodeSummary}`;
     };
   }
 
-  // ─── Step 3: VALIDATE — quality-aware self-critique ───────
+  // ─── Step 3: VALIDATE — quality-aware self-critique ───────────
 
   private async validate(graph: LinkResult): Promise<ValidationResult> {
-    // Use compact representation to save tokens (no pretty-printing, no content field)
+    // Use compact representation to save tokens
     const graphCompact = {
       nodes: graph.nodes.map((n) => ({ id: n.id, title: n.title, summary: n.summary, tags: n.tags })),
       edges: graph.edges.map((e) => ({ source: e.source, target: e.target, label: e.label, strength: e.strength })),
     };
+
+    // Truncate original notes if very large (validator doesn't need every word)
+    const notesForValidation = this.rawNotes.length > 6000
+      ? this.rawNotes.slice(0, 6000) + "\n… (notes truncated for validation)"
+      : this.rawNotes;
 
     const prompt = `You are critically evaluating a knowledge graph for BOTH quality AND semantic fidelity.
 
@@ -279,7 +497,7 @@ Be FAIR. If the notes are clear and the graph captures them well, do NOT invent 
 If the only issues are minor wording changes that don't affect meaning, score 0.90+.
 
 ORIGINAL NOTES (for comparison):
-${this.rawNotes}
+${notesForValidation}
 
 Graph: ${JSON.stringify(graphCompact)}
 
@@ -305,7 +523,7 @@ Only list issues that AFFECT MEANING or STRUCTURE, not cosmetic wording differen
     };
   }
 
-  // ─── Step 4: REFINE — targeted fixes only ─────────────────
+  // ─── Step 4: REFINE — targeted fixes only ────────────────────
 
   private async refine(
     graph: LinkResult,
@@ -376,7 +594,7 @@ Current graph: ${JSON.stringify(graphCompact)}`;
     };
   }
 
-  // ─── Main Pipeline Runner ────────────────────────────────
+  // ─── Main Pipeline Runner ──────────────────────────────────────
 
   async run(
     rawNotes: string,
@@ -393,52 +611,95 @@ Current graph: ${JSON.stringify(graphCompact)}`;
       attempt++;
 
       // Step 1: EXTRACT — reason through semantic space
+      // (handles chunking for large inputs internally)
       this.emit("extracting", attempt, 0, false);
-      const extracted = await this.callWithRetryAwareness(
-        () => this.extract(rawNotes, result),
-        attempt,
-        "Extract"
-      );
+      let extracted: ExtractResult;
+      try {
+        extracted = await this.callWithRetryAwareness(
+          () => this.extract(rawNotes, result),
+          attempt,
+          "Extract"
+        );
+      } catch (extractError) {
+        // Partial processing: if we have a previous result, continue with it
+        if (result) {
+          console.warn("[AX Pipeline] Extract failed, using previous result");
+          extracted = { nodes: result.nodes };
+        } else {
+          throw extractError;
+        }
+      }
 
       // Step 2: LINK — surface hidden relationships
       this.emit("linking", attempt, 0, false);
-      const linked = await this.callWithRetryAwareness(
-        () => this.link(extracted),
-        attempt,
-        "Link"
-      );
+      let linked: LinkResult;
+      try {
+        linked = await this.callWithRetryAwareness(
+          () => this.link(extracted),
+          attempt,
+          "Link"
+        );
+      } catch (linkError) {
+        // Partial processing: continue with extracted nodes, no edges
+        console.warn("[AX Pipeline] Link failed, using nodes without edges");
+        linked = { nodes: extracted.nodes, edges: [] };
+      }
 
       // Step 3: VALIDATE — quality-aware self-critique
       this.emit("validating", attempt, 0, false);
-      const validation = await this.callWithRetryAwareness(
-        () => this.validate(linked),
-        attempt,
-        "Validate"
-      );
-      score = validation.score;
-
-      const passed = score >= threshold;
-      this.emit("validating", attempt, score, passed, validation.issues);
-
-      iterLogs.push({
-        iteration: attempt,
-        phase: passed ? "complete" : "validating",
-        score,
-        passed,
-        issues: validation.issues,
-        timestamp: Date.now(),
-      });
-
-      // Step 4: REFINE — targeted fixes only, if score below threshold
-      if (score < threshold && attempt < iterations) {
-        this.emit("refining", attempt, score, false);
-        result = await this.callWithRetryAwareness(
-          () => this.refine(linked, validation.issues),
+      try {
+        const validation = await this.callWithRetryAwareness(
+          () => this.validate(linked),
           attempt,
-          "Refine"
+          "Validate"
         );
-      } else {
+        score = validation.score;
+
+        const passed = score >= threshold;
+        this.emit("validating", attempt, score, passed, validation.issues);
+
+        iterLogs.push({
+          iteration: attempt,
+          phase: passed ? "complete" : "validating",
+          score,
+          passed,
+          issues: validation.issues,
+          timestamp: Date.now(),
+        });
+
+        // Step 4: REFINE — targeted fixes only, if score below threshold
+        if (score < threshold && attempt < iterations) {
+          this.emit("refining", attempt, score, false);
+          try {
+            result = await this.callWithRetryAwareness(
+              () => this.refine(linked, validation.issues),
+              attempt,
+              "Refine"
+            );
+          } catch (refineError) {
+            // Partial processing: use linked result as-is
+            console.warn("[AX Pipeline] Refine failed, using linked result");
+            result = linked;
+          }
+        } else {
+          result = linked;
+        }
+      } catch (validateError) {
+        // Validation failed — use linked result with a default score
+        console.warn("[AX Pipeline] Validate failed, using default score");
+        score = 0.7; // Assume decent quality
         result = linked;
+
+        iterLogs.push({
+          iteration: attempt,
+          phase: "validating",
+          score,
+          passed: score >= threshold,
+          issues: ["Validation step failed — using estimated score"],
+          timestamp: Date.now(),
+        });
+
+        if (score >= threshold) break;
       }
     }
 

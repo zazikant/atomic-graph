@@ -8,20 +8,27 @@ const NODE_HEIGHT = 120;
 /**
  * Auto-position nodes using Dagre's layered graph layout algorithm.
  * Produces a clean, hierarchical arrangement suitable for knowledge graphs.
+ * Adapts spacing based on graph size for better readability with many nodes.
  */
 export function applyDagreLayout(
   nodes: Node<NodeCardData>[],
   edges: Edge[]
 ): Node<NodeCardData>[] {
+  const nodeCount = nodes.length;
+
+  // Adaptive spacing: wider gaps for larger graphs
+  const nodesep = nodeCount > 30 ? 100 : nodeCount > 15 ? 90 : 80;
+  const ranksep = nodeCount > 30 ? 150 : nodeCount > 15 ? 130 : 120;
+
   const g = new dagre.graphlib.Graph();
 
   g.setDefaultEdgeLabel(() => ({}));
   g.setGraph({
     rankdir: "LR",
-    nodesep: 80,
-    ranksep: 120,
-    marginx: 60,
-    marginy: 60,
+    nodesep,
+    ranksep,
+    marginx: 80,
+    marginy: 80,
   });
 
   for (const node of nodes) {

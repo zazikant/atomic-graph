@@ -44,7 +44,7 @@ export interface PipelineResult {
 
 export interface IterationLog {
   iteration: number;
-  phase: "extracting" | "linking" | "validating" | "refining" | "retrying" | "complete";
+  phase: "extracting" | "linking" | "validating" | "refining" | "retrying" | "chunking" | "complete";
   score: number;
   passed: boolean;
   issues?: string[];

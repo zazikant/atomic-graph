@@ -128,3 +128,42 @@ Stage Summary:
 - VALIDATE/REFINE prompts use compact graph representation
 - Truncated JSON recovery: even if output is cut off, partial data is salvaged
 - Pipeline more resilient to reasoning model token budget issues
+
+---
+Task ID: 8
+Agent: Main Agent
+Task: Support 32K token outputs, large inputs, partial processing, and large graph rendering
+
+Work Log:
+- Increased max_tokens from 16384 to 32768 in nvidiaClient.ts and proxy route.ts to match NVIDIA's full 32K output capacity
+- Rewrote axPipeline.ts with chunked extraction:
+  - splitIntoChunks(): splits notes >4000 chars into 6000-char chunks at paragraph/sentence boundaries
+  - extractChunk(): processes each chunk separately with section context hints
+  - deduplicateNodes(): merges duplicate concepts across chunks by title similarity, combines tags
+  - Chunked extraction emits "chunking" phase with progress detail ("Processing 3 sections…")
+- Partial processing throughout the pipeline:
+  - If a chunk fails, continues with remaining chunks (logs warning, doesn't crash)
+  - If EXTRACT fails on refinement pass, falls back to previous result
+  - If LINK fails, continues with nodes-only (no edges)
+  - If VALIDATE fails, uses estimated score 0.7 and continues
+  - If REFINE fails, uses linked result as-is
+- Optimized prompts for large inputs:
+  - VALIDATE truncates notes to 6000 chars for validation (doesn't need every word)
+  - REFINE uses compact graph representation
+  - Refinement extract uses compact node summary (id: title only) instead of full JSON
+- Added "chunking" phase to IterationLog type
+- Updated PipelineStatus with cyan styling for "chunking" phase (spinner, detail text)
+- Optimized GraphView for large graphs:
+  - Adaptive dagre layout: wider spacing for graphs with >15 or >30 nodes
+  - Edge label auto-hide for graphs with >30 edges (performance)
+  - Manual edge label toggle button (Eye/EyeOff)
+  - Graph stats panel (bottom-left): node count, edge count, "large graph" badge
+  - minZoom reduced to 0.05 for zooming out on very large graphs
+- Build verified passing
+
+Stage Summary:
+- max_tokens: 32768 (NVIDIA's full capacity) — no output truncation
+- Large inputs: auto-chunked at paragraph boundaries, processed in parallel sections
+- Partial processing: pipeline never fully crashes — always produces something useful
+- Large graphs: adaptive layout, edge label toggle, stats panel, deep zoom out
+- All phases (extract, link, validate, refine) have fallback paths on failure

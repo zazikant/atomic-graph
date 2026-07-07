@@ -20,6 +20,7 @@ const PHASE_LABELS: Record<string, string> = {
   validating: "Validating Quality",
   refining: "Refining Output",
   retrying: "Rate Limited — Retrying",
+  chunking: "Splitting Large Input",
   complete: "Complete",
 };
 
@@ -29,6 +30,7 @@ const PHASE_ICONS: Record<string, React.ReactNode> = {
   validating: <ShieldCheck className="w-3 h-3" />,
   refining: <AlertTriangle className="w-3 h-3" />,
   retrying: <AlertTriangle className="w-3 h-3" />,
+  chunking: <GitBranch className="w-3 h-3" />,
   complete: <CheckCircle2 className="w-3 h-3" />,
 };
 
@@ -92,6 +94,8 @@ export function PipelineStatus() {
                 className={`flex items-center justify-center w-5 h-5 rounded ${
                   currentPhase === "retrying"
                     ? "bg-amber-950/50 text-amber-400"
+                    : currentPhase === "chunking"
+                    ? "bg-cyan-950/50 text-cyan-400"
                     : "bg-[#1a1a3e] text-indigo-400"
                 }`}
               >
@@ -101,14 +105,18 @@ export function PipelineStatus() {
                 className={`font-mono text-xs ${
                   currentPhase === "retrying"
                     ? "text-amber-300"
+                    : currentPhase === "chunking"
+                    ? "text-cyan-300"
                     : "text-[#c8c8ee]"
                 }`}
               >
                 {PHASE_LABELS[currentPhase] || currentPhase}
               </span>
             </div>
-            {lastLog?.detail && currentPhase === "retrying" && (
-              <span className="text-amber-400/80 font-mono text-[10px] pl-7 leading-tight">
+            {lastLog?.detail && (currentPhase === "retrying" || currentPhase === "chunking") && (
+              <span className={`font-mono text-[10px] pl-7 leading-tight ${
+                currentPhase === "chunking" ? "text-cyan-400/80" : "text-amber-400/80"
+              }`}>
                 {lastLog.detail}
               </span>
             )}
@@ -164,6 +172,8 @@ export function PipelineStatus() {
                   className={`flex flex-col gap-0.5 px-2 py-1.5 rounded border ${
                     log.phase === "retrying"
                       ? "bg-amber-950/30 border-amber-800/40"
+                      : log.phase === "chunking"
+                      ? "bg-cyan-950/20 border-cyan-800/30"
                       : "bg-[#12122a] border-[#2a2a5a]"
                   }`}
                 >
@@ -175,6 +185,8 @@ export function PipelineStatus() {
                       <CheckCircle2 className="w-3 h-3 text-emerald-400 shrink-0" />
                     ) : log.phase === "retrying" ? (
                       <Loader2 className="w-3 h-3 text-amber-400 animate-spin shrink-0" />
+                    ) : log.phase === "chunking" ? (
+                      <Loader2 className="w-3 h-3 text-cyan-400 animate-spin shrink-0" />
                     ) : (
                       <XCircle className="w-3 h-3 text-red-400 shrink-0" />
                     )}
@@ -182,6 +194,8 @@ export function PipelineStatus() {
                       className={`font-mono text-[11px] flex-1 truncate ${
                         log.phase === "retrying"
                           ? "text-amber-300"
+                          : log.phase === "chunking"
+                          ? "text-cyan-300"
                           : "text-[#c8c8ee]"
                       }`}
                     >
@@ -192,7 +206,9 @@ export function PipelineStatus() {
                     </span>
                   </div>
                   {log.detail && (
-                    <span className="text-amber-400/80 font-mono text-[9px] pl-6 leading-tight">
+                    <span className={`font-mono text-[9px] pl-6 leading-tight ${
+                      log.phase === "chunking" ? "text-cyan-400/80" : "text-amber-400/80"
+                    }`}>
                       {log.detail}
                     </span>
                   )}
