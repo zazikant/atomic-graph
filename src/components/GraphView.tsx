@@ -1,13 +1,15 @@
 "use client";
 
-import { useCallback, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import {
   ReactFlow,
+  ReactFlowProvider,
   Background,
   Controls,
   MiniMap,
   useNodesState,
   useEdgesState,
+  useReactFlow,
   type Node,
   BackgroundVariant,
   Panel,
@@ -96,9 +98,9 @@ const edgeTypes = {
   animatedEdge: AnimatedEdge,
 };
 
-// ─── GraphView Component ─────────────────────────────────────
+// ─── Inner Graph Canvas (uses useReactFlow inside provider) ──
 
-export function GraphView() {
+function GraphCanvas() {
   const {
     flowNodes,
     flowEdges,
@@ -107,6 +109,8 @@ export function GraphView() {
   } = useGraphStore();
 
   const flowRef = useRef<HTMLDivElement>(null);
+  const reactFlowInstance = useReactFlow();
+  const prevNodeCountRef = useRef(0);
 
   const [nodes, setNodes, onNodesChange] = useNodesState(flowNodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(flowEdges);
@@ -119,6 +123,18 @@ export function GraphView() {
   useMemo(() => {
     setEdges(flowEdges);
   }, [flowEdges, setEdges]);
+
+  // Auto fitView when nodes first appear (pipeline completes) or change count
+  useEffect(() => {
+    if (flowNodes.length > 0 && flowNodes.length !== prevNodeCountRef.current) {
+      prevNodeCountRef.current = flowNodes.length;
+      // Short delay to let React Flow compute layout before fitting
+      const timer = setTimeout(() => {
+        reactFlowInstance.fitView({ padding: 0.2, duration: 800 });
+      }, 150);
+      return () => clearTimeout(timer);
+    }
+  }, [flowNodes.length, reactFlowInstance]);
 
   const onNodeClick = useCallback(
     (_: React.MouseEvent, node: Node) => {
@@ -185,8 +201,8 @@ export function GraphView() {
     URL.revokeObjectURL(url);
   }, [flowNodes, flowEdges]);
 
-  // ─── Fit view helper ──────────────────────────────────────
-  const fitViewOptions = { padding: 0.2, duration: 600 };
+  // ─── Fit view options ─────────────────────────────────────
+  const fitViewOptions = { padding: 0.2, duration: 800 };
 
   if (flowNodes.length === 0) {
     return (
@@ -283,5 +299,15 @@ export function GraphView() {
       {/* Node Drawer — slides in from right */}
       {selectedNodeId && <NodeDrawer />}
     </div>
+  );
+}
+
+// ─── GraphView — wraps canvas in ReactFlowProvider ───────────
+
+export function GraphView() {
+  return (
+    <ReactFlowProvider>
+      <GraphCanvas />
+    </ReactFlowProvider>
   );
 }
