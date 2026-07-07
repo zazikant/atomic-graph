@@ -46,40 +46,60 @@ export interface PipelineStreamCallbacks {
   onChunk?: (text: string) => void;
 }
 
+export interface AXPipelineOptions {
+  /** Live event callbacks (for the dark terminal-style log viewer). */
+  streamCallbacks?: PipelineStreamCallbacks;
+  /**
+   * Route LLM calls through /api/nvidia-stream (SSE) instead of /api/nvidia.
+   * Default: false — preserves the original reliable non-streaming behaviour.
+   * Set to true to opt into live token + log streaming (currently ~60-70%
+   * success rate per call from Vercel Edge for gpt-oss-120b).
+   */
+  useStreaming?: boolean;
+}
+
 export class AXPipeline {
   private client: NvidiaClient;
   private onIteration: (log: IterationLog) => void;
   private streamCallbacks: PipelineStreamCallbacks;
+  private useStreaming: boolean;
   private rawNotes: string = "";
 
   constructor(
     apiKey: string,
     model: NvidiaModel,
     onIteration: (log: IterationLog) => void,
-    streamCallbacks: PipelineStreamCallbacks = {},
+    options: AXPipelineOptions = {},
   ) {
     this.client = new NvidiaClient(apiKey, model);
     this.onIteration = onIteration;
-    this.streamCallbacks = streamCallbacks;
+    this.streamCallbacks = options.streamCallbacks ?? {};
+    this.useStreaming = options.useStreaming ?? false;
   }
 
   /**
-   * Choose between streaming (preferred — works on Vercel Edge for gpt-oss-120b)
-   * and non-streaming (fallback). Wraps each call with phase logging.
+   * Routes an LLM call. By default uses the original non-streaming chat()
+   * path (which goes through /api/nvidia with 15s × 3 retries — proven
+   * reliable for this project on Vercel).
+   *
+   * If the pipeline was constructed with streamCallbacks AND useStreaming=true,
+   * routes through /api/nvidia-stream (SSE) for live token + log streaming.
+   * Streaming is opt-in to preserve the original reliable behaviour.
    */
   private async callLLMJSON<T>(
     prompt: string,
     phaseLabel: string,
   ): Promise<T> {
-    // Try streaming first. If it throws, the caller's callWithRetryAwareness
-    // wrapper will surface a user-friendly error.
-    return await this.client.chatJSONStream<T>(
-      prompt,
-      SYSTEM_PROMPT,
-      this.streamCallbacks.onLog,
-      this.streamCallbacks.onChunk,
-      phaseLabel,
-    );
+    if (this.useStreaming) {
+      return await this.client.chatJSONStream<T>(
+        prompt,
+        SYSTEM_PROMPT,
+        this.streamCallbacks.onLog,
+        this.streamCallbacks.onChunk,
+        phaseLabel,
+      );
+    }
+    return await this.client.chatJSON<T>(prompt, SYSTEM_PROMPT);
   }
 
   private emit(

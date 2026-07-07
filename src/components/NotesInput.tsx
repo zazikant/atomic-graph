@@ -46,14 +46,19 @@ export function NotesInput({ onGraphGenerated }: NotesInputProps) {
           addIterationLog(log);
         },
         {
-          // Stream live events from /api/nvidia-stream into the store.
-          // These power the dark terminal-style log viewer in PipelineStatus.
-          onLog: (line) => {
-            addLiveEvent({ ts: Date.now(), type: "log", line });
-          },
-          onChunk: (text) => {
-            addLiveEvent({ ts: Date.now(), type: "chunk", text });
-            appendLiveText(text);
+          // Streaming is OPT-IN. Default is useStreaming: false which preserves
+          // the original reliable behaviour (non-streaming /api/nvidia with
+          // 15s × 3 retries). Set useStreaming: true to route through
+          // /api/nvidia-stream for live token + log streaming.
+          useStreaming: false,
+          streamCallbacks: {
+            onLog: (line) => {
+              addLiveEvent({ ts: Date.now(), type: "log", line });
+            },
+            onChunk: (text) => {
+              addLiveEvent({ ts: Date.now(), type: "chunk", text });
+              appendLiveText(text);
+            },
           },
         },
       );
