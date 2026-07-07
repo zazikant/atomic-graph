@@ -1,17 +1,10 @@
 "use client";
 
 import { useGraphStore } from "@/store/graphStore";
-import { NVIDIA_MODELS } from "@/lib/types";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Slider } from "@/components/ui/slider";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { Badge } from "@/components/ui/badge";
 import { Settings, Key, Cpu, RotateCcw, Target } from "lucide-react";
 
 export function ConfigBar() {
@@ -41,28 +34,15 @@ export function ConfigBar() {
         />
       </div>
 
-      {/* Model Selector */}
+      {/* Model Badge — single model */}
       <div className="flex items-center gap-2">
         <Cpu className="w-4 h-4 text-[#8888cc] shrink-0" />
-        <Select
-          value={config.model}
-          onValueChange={(val) => setConfig({ model: val as typeof config.model })}
+        <Badge
+          variant="secondary"
+          className="bg-[#1a1a3e] text-[#c8c8ee] font-mono text-xs border border-[#3a3a6a] px-3 py-1"
         >
-          <SelectTrigger className="h-8 w-[220px] bg-[#1a1a3e] border-[#3a3a6a] text-[#e0e0ff] text-xs font-mono">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent className="bg-[#1a1a3e] border-[#3a3a6a]">
-            {NVIDIA_MODELS.map((m) => (
-              <SelectItem
-                key={m.value}
-                value={m.value}
-                className="text-[#e0e0ff] text-xs font-mono focus:bg-[#2a2a5a] focus:text-white"
-              >
-                {m.label}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+          GPT-OSS 120B
+        </Badge>
       </div>
 
       {/* Iterations Slider */}

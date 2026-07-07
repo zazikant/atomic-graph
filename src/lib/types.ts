@@ -60,17 +60,10 @@ export interface AppConfig {
   confidenceThreshold: number;
 }
 
-export type NvidiaModel =
-  | "meta/llama-3.1-405b-instruct"
-  | "nvidia/llama-3.3-nemotron-super-49b-v1"
-  | "meta/llama-3.1-70b-instruct"
-  | "nvidia/llama-3.1-nemotron-70b-instruct";
+export type NvidiaModel = "openai/gpt-oss-120b";
 
 export const NVIDIA_MODELS: { value: NvidiaModel; label: string }[] = [
-  { value: "meta/llama-3.1-405b-instruct", label: "Llama 3.1 405B Instruct" },
-  { value: "nvidia/llama-3.3-nemotron-super-49b-v1", label: "Nemotron Super 49B" },
-  { value: "meta/llama-3.1-70b-instruct", label: "Llama 3.1 70B Instruct" },
-  { value: "nvidia/llama-3.1-nemotron-70b-instruct", label: "Nemotron 70B Instruct" },
+  { value: "openai/gpt-oss-120b", label: "GPT-OSS 120B" },
 ];
 
 // ─── Cluster Colour Palette ──────────────────────────────────

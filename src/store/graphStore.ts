@@ -9,6 +9,9 @@ import type {
 import type { Node, Edge } from "@xyflow/react";
 import type { NodeCardData } from "@/lib/types";
 
+// ─── Default API key for testing ────────────────────────────
+const DEFAULT_API_KEY = "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";
+
 // ─── Store Interface ─────────────────────────────────────────
 
 interface GraphStore {
@@ -48,8 +51,8 @@ interface GraphStore {
 function loadStoredConfig(): AppConfig {
   if (typeof window === "undefined") {
     return {
-      apiKey: "",
-      model: "meta/llama-3.1-405b-instruct",
+      apiKey: DEFAULT_API_KEY,
+      model: "openai/gpt-oss-120b",
       iterations: 3,
       confidenceThreshold: 0.75,
     };
@@ -57,14 +60,16 @@ function loadStoredConfig(): AppConfig {
   try {
     const stored = localStorage.getItem("atomic-graph-config");
     if (stored) {
-      return { ...JSON.parse(stored) };
+      const parsed = JSON.parse(stored);
+      // Always ensure model is the current default
+      return { ...parsed, model: "openai/gpt-oss-120b" };
     }
   } catch {
     // ignore
   }
   return {
-    apiKey: "",
-    model: "meta/llama-3.1-405b-instruct",
+    apiKey: DEFAULT_API_KEY,
+    model: "openai/gpt-oss-120b",
     iterations: 3,
     confidenceThreshold: 0.75,
   };
