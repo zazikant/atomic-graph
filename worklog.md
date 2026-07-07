@@ -84,3 +84,22 @@ Stage Summary:
 - Pipeline emits "retrying" phase when API calls fail after retries exhausted
 - UI shows amber "Rate Limited — Retrying" status with detail text
 - Build verified passing
+
+---
+Task ID: 6
+Agent: Main Agent
+Task: Fix exported HTML not showing any elements
+
+Work Log:
+- Diagnosed two root causes in exportHTML.ts:
+  1. UMD bundle global name: The @xyflow/react UMD exposes `window.ReactFlow`, not `window.Xyflow`. The old code destructured from `Xyflow` which was undefined.
+  2. Missing jsxRuntime global: The UMD bundle requires `window.jsxRuntime` (react/jsx-runtime), but the standard `react.production.min.js` UMD only exposes `window.React`. Without jsxRuntime, the entire React Flow bundle silently fails to initialize.
+- Added jsx-runtime shim between React/ReactDOM and React Flow script tags: `window.jsxRuntime = { Fragment, jsx, jsxs }` that delegates to `React.createElement`
+- Fixed global reference from `Xyflow` to `ReactFlow` with explicit property extraction (RF = window.ReactFlow)
+- Added MarkerType.ArrowClosed for edge markers (available from the ReactFlow global)
+- Build verified passing
+
+Stage Summary:
+- Exported HTML now correctly initializes React Flow UMD bundle
+- jsxRuntime shim bridges the gap between React UMD and @xyflow/react UMD expectations
+- All components (nodes, edges, minimap, controls, drawer) should render correctly

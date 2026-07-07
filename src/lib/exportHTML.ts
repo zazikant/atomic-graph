@@ -13,7 +13,7 @@ import type { NodeCardData, AtomicNode, GraphEdge } from "./types";
  * - Minimap navigation
  * - Animated dashed edges with arrow markers
  * - Dark Obsidian theme
- * - Offline use forever
+ * - Offline use forever (after initial CDN load)
  */
 
 interface ExportableNode {
@@ -144,18 +144,46 @@ export function generateHTMLExport(
 
 <script src="https://cdn.jsdelivr.net/npm/react@18/umd/react.production.min.js" crossorigin></script>
 <script src="https://cdn.jsdelivr.net/npm/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+<script>
+// ── jsx-runtime shim ─────────────────────────────────────────
+// The @xyflow/react UMD bundle requires window.jsxRuntime,
+// which the standard React UMD build does not expose.
+// This shim bridges the gap so the UMD bundle initializes correctly.
+window.jsxRuntime = {
+  Fragment: React.Fragment,
+  jsx: function(type, props, key) {
+    if (key !== undefined && props && props.key === undefined) props.key = key;
+    return React.createElement(type, props);
+  },
+  jsxs: function(type, props, key) {
+    if (key !== undefined && props && props.key === undefined) props.key = key;
+    return React.createElement(type, props);
+  }
+};
+</script>
 <script src="https://cdn.jsdelivr.net/npm/@xyflow/react@12/dist/umd/index.js" crossorigin></script>
 <script>
 (function() {
-  const h = React.createElement;
-  const { ReactFlow, Background, Controls, MiniMap, BackgroundVariant, useNodesState, useEdgesState, Handle, Position } = Xyflow;
+  var h = React.createElement;
+  // The UMD bundle exposes everything on window.ReactFlow (NOT Xyflow)
+  var RF = window.ReactFlow;
+  var ReactFlow = RF.ReactFlow;
+  var Background = RF.Background;
+  var Controls = RF.Controls;
+  var MiniMap = RF.MiniMap;
+  var BackgroundVariant = RF.BackgroundVariant;
+  var useNodesState = RF.useNodesState;
+  var useEdgesState = RF.useEdgesState;
+  var Handle = RF.Handle;
+  var Position = RF.Position;
+  var MarkerType = RF.MarkerType;
 
-  const GRAPH_DATA = ${graphData};
+  var GRAPH_DATA = ${graphData};
 
   // ── Custom Node Component ────────────────────────
   function AtomicCard({ data, id }) {
-    const nodeData = data.node;
-    const color = data.color;
+    var nodeData = data.node;
+    var color = data.color;
     return h('div', {
       className: 'node-card',
       onClick: function(e) { e.stopPropagation(); openDrawer(id); },
@@ -181,9 +209,15 @@ export function generateHTMLExport(
     var cX = midX - dy * 0.2, cY = midY + dx * 0.2;
     var path = 'M ' + sx + ' ' + sy + ' Q ' + cX + ' ' + cY + ' ' + tx + ' ' + ty;
     var label = props.label;
+
+    var markerEnd = null;
+    if (MarkerType) {
+      markerEnd = { type: MarkerType.ArrowClosed, color: edgeColor, width: 20, height: 20 };
+    }
+
     return h('g', null,
       h('path', { d: path, fill: 'none', stroke: edgeColor, strokeWidth: edgeWidth + 2, strokeOpacity: 0.15 }),
-      h('path', { d: path, fill: 'none', stroke: edgeColor, strokeWidth: edgeWidth, strokeDasharray: '6 4', markerEnd: props.markerEnd, className: 'animated-edge' }),
+      h('path', { d: path, fill: 'none', stroke: edgeColor, strokeWidth: edgeWidth, strokeDasharray: '6 4', markerEnd: markerEnd, className: 'animated-edge' }),
       label ? h('text', { x: midX, y: midY - 8, textAnchor: 'middle', style: { pointerEvents: 'none' }, fill: '#8888cc', fontSize: 10, fontFamily: 'monospace' },
         (typeof label === 'string' && label.length > 20 ? label.slice(0, 18) + '\\u2026' : label)) : null
     );
