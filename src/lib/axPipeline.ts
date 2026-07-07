@@ -662,17 +662,50 @@ Current graph: ${JSON.stringify(graphCompact)}`;
       }
 
       // Step 2: LINK — surface hidden relationships
+      // LINK is the step most likely to time out (it returns larger JSON
+      // than EXTRACT — 5-15 edges with labels + strengths). Without edges
+      // the graph is useless, so we retry up to 2 extra times before
+      // falling back to no-edges.
       this.emit("linking", attempt, 0, false);
-      let linked: LinkResult;
-      try {
-        linked = await this.callWithRetryAwareness(
-          () => this.link(extracted),
-          attempt,
-          "Link"
-        );
-      } catch (linkError) {
-        // Partial processing: continue with extracted nodes, no edges
-        console.warn("[AX Pipeline] Link failed, using nodes without edges");
+      let linked: LinkResult | null = null;
+      const MAX_LINK_ATTEMPTS = 3;
+      for (let linkAttempt = 1; linkAttempt <= MAX_LINK_ATTEMPTS; linkAttempt++) {
+        try {
+          if (linkAttempt > 1) {
+            this.emit(
+              "retrying",
+              attempt,
+              0,
+              false,
+              undefined,
+              `Link attempt ${linkAttempt}/${MAX_LINK_ATTEMPTS} — previous call failed, retrying…`,
+            );
+          }
+          linked = await this.callWithRetryAwareness(
+            () => this.link(extracted),
+            attempt,
+            `Link${linkAttempt > 1 ? ` (retry ${linkAttempt})` : ""}`,
+          );
+          break; // success
+        } catch (linkError) {
+          const msg = linkError instanceof Error ? linkError.message : String(linkError);
+          console.warn(
+            `[AX Pipeline] Link attempt ${linkAttempt}/${MAX_LINK_ATTEMPTS} failed: ${msg}`,
+          );
+          if (linkAttempt === MAX_LINK_ATTEMPTS) {
+            this.emit(
+              "retrying",
+              attempt,
+              0,
+              false,
+              undefined,
+              `Link failed ${MAX_LINK_ATTEMPTS}× — continuing with nodes only (no edges). Click Generate again to retry.`,
+            );
+          }
+        }
+      }
+      // Fallback: if all link attempts failed, use nodes without edges
+      if (linked === null) {
         linked = { nodes: extracted.nodes, edges: [] };
       }
 

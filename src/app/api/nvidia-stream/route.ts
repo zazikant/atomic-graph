@@ -32,8 +32,17 @@ export const dynamic = "force-dynamic";
 export const runtime = "edge";
 
 const NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1";
-const CALL_TIMEOUT_MS = 12_000;
-const MAX_ATTEMPTS = 2;
+// Per-call timeout: 18s.
+// gpt-oss-120b on Vercel Edge can take 8-15s TTFB for larger JSON outputs
+// (LINK step returns 5-15 edges with labels + strengths — bigger than
+// EXTRACT node titles). 12s was too tight and caused LINK to time out
+// silently, producing graphs with nodes but no edges.
+//
+// 1 attempt only (was 2): 18s + 500ms backoff + 18s = 36.5s exceeds
+// Edge's 30s cap. With 1 attempt we stay safely under 30s. Pipeline-level
+// retry in axPipeline.ts handles the second attempt instead.
+const CALL_TIMEOUT_MS = 18_000;
+const MAX_ATTEMPTS = 1;
 
 interface SSEEvent {
   type: string;
