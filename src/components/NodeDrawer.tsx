@@ -61,7 +61,7 @@ export function NodeDrawer() {
             <h4 className="text-[#8888cc] font-mono text-xs mb-1 uppercase tracking-wider">
               Summary
             </h4>
-            <p className="text-[#c8c8ee] font-mono text-sm leading-relaxed">
+            <p className="text-[#c8c8ee] font-mono text-sm leading-relaxed break-words">
               {data.summary}
             </p>
           </div>

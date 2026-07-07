@@ -98,8 +98,8 @@ export function generateHTMLExport(
   .node-card .accent-bar {
     position: absolute; left: 0; top: 0; bottom: 0; width: 4px; border-radius: 12px 0 0 12px;
   }
-  .node-card h3 { font-size: 13px; font-weight: 700; margin-bottom: 4px; line-height: 1.3; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-  .node-card p { font-size: 11px; color: #b0b0dd; line-height: 1.5; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; margin-bottom: 6px; }
+  .node-card h3 { font-size: 13px; font-weight: 700; margin-bottom: 4px; line-height: 1.3; word-wrap: break-word; overflow-wrap: break-word; }
+  .node-card p { font-size: 11px; color: #b0b0dd; line-height: 1.5; word-wrap: break-word; overflow-wrap: break-word; margin-bottom: 6px; }
   .node-card .tags { display: flex; gap: 4px; flex-wrap: wrap; }
   .node-card .tag { font-size: 9px; padding: 2px 6px; border-radius: 4px; background: #12122a; color: #8888cc; border: 1px solid #2a2a5a; }
 
@@ -108,8 +108,8 @@ export function generateHTMLExport(
   .drawer-overlay.open { display: block; }
   .drawer { position: fixed; right: 0; top: 0; bottom: 0; width: 340px; background: #12122a; border-left: 1px solid #2a2a5a; z-index: 1000; padding: 20px; overflow-y: auto; transform: translateX(100%); transition: transform 0.2s ease; }
   .drawer.open { transform: translateX(0); }
-  .drawer h2 { font-size: 16px; font-weight: 700; margin-bottom: 8px; }
-  .drawer .summary { font-size: 13px; color: #c8c8ee; line-height: 1.6; margin-bottom: 16px; }
+  .drawer h2 { font-size: 16px; font-weight: 700; margin-bottom: 8px; word-wrap: break-word; overflow-wrap: break-word; }
+  .drawer .summary { font-size: 13px; color: #c8c8ee; line-height: 1.6; margin-bottom: 16px; word-wrap: break-word; overflow-wrap: break-word; }
   .drawer .content { font-size: 12px; color: #b0b0dd; line-height: 1.7; white-space: pre-wrap; margin-bottom: 16px; }
   .drawer .tags { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 16px; }
   .drawer .tag { font-size: 11px; padding: 3px 8px; border-radius: 6px; background: #1a1a3e; color: #c8c8ee; border: 1px solid #3a3a6a; }

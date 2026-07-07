@@ -42,14 +42,14 @@ function NodeCardComponent({ data, selected }: NodeProps & { data: NodeCardData 
 
         {/* Title */}
         <h3
-          className="font-mono text-sm font-bold leading-tight mb-1 line-clamp-2"
+          className="font-mono text-sm font-bold leading-tight mb-1 break-words"
           style={{ color }}
         >
           {node.title}
         </h3>
 
-        {/* Summary (2 lines max) */}
-        <p className="text-[#b0b0dd] font-mono text-[11px] leading-relaxed line-clamp-2 mb-2">
+        {/* Summary */}
+        <p className="text-[#b0b0dd] font-mono text-[11px] leading-relaxed mb-2 break-words">
           {node.summary}
         </p>
 
