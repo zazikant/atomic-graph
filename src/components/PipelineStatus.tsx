@@ -19,6 +19,7 @@ const PHASE_LABELS: Record<string, string> = {
   linking: "Linking Relationships",
   validating: "Validating Quality",
   refining: "Refining Output",
+  retrying: "Rate Limited — Retrying",
   complete: "Complete",
 };
 
@@ -27,6 +28,7 @@ const PHASE_ICONS: Record<string, React.ReactNode> = {
   linking: <GitBranch className="w-3 h-3" />,
   validating: <ShieldCheck className="w-3 h-3" />,
   refining: <AlertTriangle className="w-3 h-3" />,
+  retrying: <AlertTriangle className="w-3 h-3" />,
   complete: <CheckCircle2 className="w-3 h-3" />,
 };
 
@@ -84,13 +86,32 @@ export function PipelineStatus() {
       <div className="p-3 space-y-3">
         {/* Current Phase */}
         {currentPhase && (
-          <div className="flex items-center gap-2">
-            <div className="flex items-center justify-center w-5 h-5 rounded bg-[#1a1a3e] text-indigo-400">
-              {PHASE_ICONS[currentPhase]}
+          <div className="flex flex-col gap-1">
+            <div className="flex items-center gap-2">
+              <div
+                className={`flex items-center justify-center w-5 h-5 rounded ${
+                  currentPhase === "retrying"
+                    ? "bg-amber-950/50 text-amber-400"
+                    : "bg-[#1a1a3e] text-indigo-400"
+                }`}
+              >
+                {PHASE_ICONS[currentPhase]}
+              </div>
+              <span
+                className={`font-mono text-xs ${
+                  currentPhase === "retrying"
+                    ? "text-amber-300"
+                    : "text-[#c8c8ee]"
+                }`}
+              >
+                {PHASE_LABELS[currentPhase] || currentPhase}
+              </span>
             </div>
-            <span className="text-[#c8c8ee] font-mono text-xs">
-              {PHASE_LABELS[currentPhase] || currentPhase}
-            </span>
+            {lastLog?.detail && currentPhase === "retrying" && (
+              <span className="text-amber-400/80 font-mono text-[10px] pl-7 leading-tight">
+                {lastLog.detail}
+              </span>
+            )}
           </div>
         )}
 
@@ -140,22 +161,41 @@ export function PipelineStatus() {
               {iterationLogs.map((log, i) => (
                 <div
                   key={i}
-                  className="flex items-center gap-2 px-2 py-1.5 rounded bg-[#12122a] border border-[#2a2a5a]"
+                  className={`flex flex-col gap-0.5 px-2 py-1.5 rounded border ${
+                    log.phase === "retrying"
+                      ? "bg-amber-950/30 border-amber-800/40"
+                      : "bg-[#12122a] border-[#2a2a5a]"
+                  }`}
                 >
-                  <span className="text-[#8888cc] font-mono text-[10px] w-4 text-center shrink-0">
-                    {log.iteration}
-                  </span>
-                  {log.passed ? (
-                    <CheckCircle2 className="w-3 h-3 text-emerald-400 shrink-0" />
-                  ) : (
-                    <XCircle className="w-3 h-3 text-red-400 shrink-0" />
+                  <div className="flex items-center gap-2">
+                    <span className="text-[#8888cc] font-mono text-[10px] w-4 text-center shrink-0">
+                      {log.iteration}
+                    </span>
+                    {log.passed ? (
+                      <CheckCircle2 className="w-3 h-3 text-emerald-400 shrink-0" />
+                    ) : log.phase === "retrying" ? (
+                      <Loader2 className="w-3 h-3 text-amber-400 animate-spin shrink-0" />
+                    ) : (
+                      <XCircle className="w-3 h-3 text-red-400 shrink-0" />
+                    )}
+                    <span
+                      className={`font-mono text-[11px] flex-1 truncate ${
+                        log.phase === "retrying"
+                          ? "text-amber-300"
+                          : "text-[#c8c8ee]"
+                      }`}
+                    >
+                      {PHASE_LABELS[log.phase] || log.phase}
+                    </span>
+                    <span className="text-[#8888cc] font-mono text-[10px] shrink-0">
+                      {(log.score * 100).toFixed(0)}%
+                    </span>
+                  </div>
+                  {log.detail && (
+                    <span className="text-amber-400/80 font-mono text-[9px] pl-6 leading-tight">
+                      {log.detail}
+                    </span>
                   )}
-                  <span className="text-[#c8c8ee] font-mono text-[11px] flex-1 truncate">
-                    {PHASE_LABELS[log.phase] || log.phase}
-                  </span>
-                  <span className="text-[#8888cc] font-mono text-[10px] shrink-0">
-                    {(log.score * 100).toFixed(0)}%
-                  </span>
                 </div>
               ))}
             </div>

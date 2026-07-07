@@ -9,9 +9,9 @@ import type { NvidiaModel } from "./types";
  * The API key is sent from the browser to our proxy only,
  * then forwarded to Nvidia. No other server receives it.
  *
- * Matches the user's OpenAI SDK example:
- *   baseURL: 'https://integrate.api.nvidia.com/v1'
- *   model: 'openai/gpt-oss-120b'
+ * The proxy handles retry logic (3 attempts, 15s delay) for rate limits
+ * and transient errors. This client surfaces retry info and handles
+ * rejections gracefully with user-friendly messages.
  */
 export class NvidiaClient {
   private apiKey: string;
@@ -31,6 +31,9 @@ export class NvidiaClient {
    * Send a chat completion request through our server-side proxy.
    * The proxy forwards to Nvidia NIM API, bypassing CORS.
    * Handles reasoning models that return output in reasoning_content.
+   *
+   * The proxy retries up to 3 times on 429/5xx errors with 15s delay.
+   * If all retries are exhausted, throws a descriptive error.
    */
   async chat(userPrompt: string, systemPrompt?: string): Promise<string> {
     const messages: { role: "system" | "user" | "assistant"; content: string }[] = [];
@@ -56,13 +59,50 @@ export class NvidiaClient {
     });
 
     if (!response.ok) {
-      let errorMsg = `API proxy error (${response.status})`;
+      let errorMsg = `API error (${response.status})`;
+      let retryable = false;
+      let attemptsExhausted = false;
+
       try {
         const errBody = await response.json();
         errorMsg = errBody.error || errBody.details || errorMsg;
+        retryable = errBody.retryable ?? false;
+        attemptsExhausted = errBody.attemptsExhausted ?? false;
       } catch {
         // couldn't parse error body
       }
+
+      // Provide user-friendly error messages based on common scenarios
+      if (attemptsExhausted) {
+        throw new Error(
+          `Nvidia API rate limit reached — all 3 retry attempts failed after 15-second delays. Please wait a moment and try again.`
+        );
+      }
+
+      if (response.status === 401) {
+        throw new Error(
+          "Invalid API key. Please check your Nvidia API key in the config bar and try again."
+        );
+      }
+
+      if (response.status === 403) {
+        throw new Error(
+          "Access denied — your API key does not have permission to use this model. Check your Nvidia account permissions."
+        );
+      }
+
+      if (response.status === 429) {
+        throw new Error(
+          "Rate limited by Nvidia — too many requests. Please wait a moment before trying again."
+        );
+      }
+
+      if (response.status >= 500) {
+        throw new Error(
+          `Nvidia server error (${response.status}): ${errorMsg}. This is usually temporary — try again in a moment.`
+        );
+      }
+
       throw new Error(errorMsg);
     }
 

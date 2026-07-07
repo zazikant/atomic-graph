@@ -42,7 +42,8 @@ export class AXPipeline {
     iteration: number,
     score: number,
     passed: boolean,
-    issues?: string[]
+    issues?: string[],
+    detail?: string
   ) {
     this.onIteration({
       iteration,
@@ -50,8 +51,68 @@ export class AXPipeline {
       score,
       passed,
       issues,
+      detail,
       timestamp: Date.now(),
     });
+  }
+
+  /**
+   * Wrap an async API call with rate-limit / transient error detection.
+   * When the proxy returns a rate-limit error (after its own 3 retries exhausted),
+   * this emits a "retrying" log to the UI so the user sees what's happening.
+   *
+   * The actual retry (3 attempts, 15s delay) is done by the server-side proxy.
+   * This wrapper catches the *final* error after all proxy retries are exhausted
+   * and provides the user with clear feedback.
+   */
+  private async callWithRetryAwareness<T>(
+    fn: () => Promise<T>,
+    iteration: number,
+    phaseLabel: string
+  ): Promise<T> {
+    try {
+      return await fn();
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+
+      // Detect rate-limit / transient errors that exhausted all proxy retries
+      const isRateLimit =
+        msg.includes("rate limit") ||
+        msg.includes("Rate limit") ||
+        msg.includes("429") ||
+        msg.includes("retry attempt") ||
+        msg.includes("too many requests");
+
+      const isTransient =
+        msg.includes("server error") ||
+        msg.includes("Server Error") ||
+        msg.includes("502") ||
+        msg.includes("503") ||
+        msg.includes("504") ||
+        msg.includes("temporary");
+
+      if (isRateLimit) {
+        this.emit(
+          "retrying",
+          iteration,
+          0,
+          false,
+          undefined,
+          `Rate limited during ${phaseLabel} — all proxy retries exhausted. Please wait and try again.`
+        );
+      } else if (isTransient) {
+        this.emit(
+          "retrying",
+          iteration,
+          0,
+          false,
+          undefined,
+          `Transient server error during ${phaseLabel} — all proxy retries exhausted. Try again shortly.`
+        );
+      }
+
+      throw error;
+    }
   }
 
   // ─── Step 1: EXTRACT — reason through semantic space ──────
@@ -317,15 +378,27 @@ Only ADD or CHANGE what's needed to fix the listed issues. Preserve everything e
 
       // Step 1: EXTRACT — reason through semantic space
       this.emit("extracting", attempt, 0, false);
-      const extracted = await this.extract(rawNotes, result);
+      const extracted = await this.callWithRetryAwareness(
+        () => this.extract(rawNotes, result),
+        attempt,
+        "Extract"
+      );
 
       // Step 2: LINK — surface hidden relationships
       this.emit("linking", attempt, 0, false);
-      const linked = await this.link(extracted);
+      const linked = await this.callWithRetryAwareness(
+        () => this.link(extracted),
+        attempt,
+        "Link"
+      );
 
       // Step 3: VALIDATE — quality-aware self-critique
       this.emit("validating", attempt, 0, false);
-      const validation = await this.validate(linked);
+      const validation = await this.callWithRetryAwareness(
+        () => this.validate(linked),
+        attempt,
+        "Validate"
+      );
       score = validation.score;
 
       const passed = score >= threshold;
@@ -343,7 +416,11 @@ Only ADD or CHANGE what's needed to fix the listed issues. Preserve everything e
       // Step 4: REFINE — targeted fixes only, if score below threshold
       if (score < threshold && attempt < iterations) {
         this.emit("refining", attempt, score, false);
-        result = await this.refine(linked, validation.issues);
+        result = await this.callWithRetryAwareness(
+          () => this.refine(linked, validation.issues),
+          attempt,
+          "Refine"
+        );
       } else {
         result = linked;
       }

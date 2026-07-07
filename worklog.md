@@ -50,3 +50,37 @@ Stage Summary:
 - Full app wired together, lint passes clean, dev server renders successfully
 - 3 export formats: HTML (self-contained interactive), PNG (image), JSON (data)
 - Quality-first pipeline: semantic fidelity scoring, fair validation, targeted refinement only
+
+---
+Task ID: 4
+Agent: Main Agent
+Task: Fix dagre layout spacing and add auto fitView on first render
+
+Work Log:
+- Updated src/lib/graphLayout.ts: Increased dagre spacing (nodesep: 60→80, ranksep: 100→120, marginx/y: 40→60)
+- Updated src/components/GraphView.tsx: Added ReactFlowProvider wrapper, inner GraphCanvas component with useReactFlow hook, auto-fitView on node count change with 0.2 padding and 800ms animation
+- Build verified passing
+
+Stage Summary:
+- Nodes spread across the full canvas instead of bunching bottom-right
+- Graph auto-centers when pipeline completes, no nodes cut off on edges
+
+---
+Task ID: 5
+Agent: Main Agent
+Task: Add NVIDIA API rate limit respect, retry logic (3 attempts, 15s delay), and graceful error handling
+
+Work Log:
+- Rewrote src/app/api/nvidia/route.ts: Added retry loop (3 attempts, 15s delay) for transient errors (429, 500, 502, 503, 504), non-retryable errors (400, 401, 403, 404) return immediately, descriptive error messages via describeStatus(), retry metadata in response
+- Updated src/lib/nvidiaClient.ts: Graceful error messages for common scenarios (401=invalid key, 403=access denied, 429=rate limited, 5xx=server error, all retries exhausted), user-friendly descriptions
+- Updated src/lib/types.ts: Added "retrying" phase to IterationLog, added detail field for human-readable retry status
+- Updated src/lib/axPipeline.ts: Added callWithRetryAwareness wrapper for all 4 pipeline steps, emits "retrying" log with detail when rate limit/transient errors occur after proxy retries exhausted
+- Updated src/components/PipelineStatus.tsx: Added "retrying" phase with amber styling, animated spinner icon, detail text display in both current phase and iteration logs
+
+Stage Summary:
+- Server-side proxy retries up to 3 times with 15-second delays on 429/5xx errors
+- Non-retryable errors (auth, bad request) fail fast with clear messages
+- Client receives descriptive error messages for every scenario
+- Pipeline emits "retrying" phase when API calls fail after retries exhausted
+- UI shows amber "Rate Limited — Retrying" status with detail text
+- Build verified passing

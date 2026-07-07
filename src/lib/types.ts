@@ -44,10 +44,12 @@ export interface PipelineResult {
 
 export interface IterationLog {
   iteration: number;
-  phase: "extracting" | "linking" | "validating" | "refining" | "complete";
+  phase: "extracting" | "linking" | "validating" | "refining" | "retrying" | "complete";
   score: number;
   passed: boolean;
   issues?: string[];
+  /** Human-readable detail, e.g. "Rate limited — retrying in 15s (attempt 2/3)" */
+  detail?: string;
   timestamp: number;
 }
 
