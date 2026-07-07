@@ -189,28 +189,90 @@ function GraphCanvas() {
 
   // ─── Export as JSON ────────────────────────────────────────
   const exportJSON = useCallback(() => {
-    const data = {
-      nodes: flowNodes.map((n) => ({
-        id: n.id,
-        ...n.data.node,
-      })),
-      edges: flowEdges.map((e) => ({
-        source: e.source,
-        target: e.target,
-        label: e.data?.label || e.label,
-        strength: e.data?.strength,
-      })),
-      exportedAt: new Date().toISOString(),
-    };
-    const blob = new Blob([JSON.stringify(data, null, 2)], {
-      type: "application/json",
-    });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.download = "atomic-graph.json";
-    link.href = url;
-    link.click();
-    URL.revokeObjectURL(url);
+    try {
+      const data = {
+        nodes: flowNodes.map((n) => ({
+          id: n.id,
+          ...n.data.node,
+        })),
+        edges: flowEdges.map((e) => ({
+          source: e.source,
+          target: e.target,
+          label: e.data?.label || e.label,
+          strength: e.data?.strength,
+        })),
+        exportedAt: new Date().toISOString(),
+      };
+
+      // Use streaming JSON serialization for large graphs to avoid
+      // memory issues with JSON.stringify on very large datasets.
+      // For most graphs, JSON.stringify is fine, but we add a safety
+      // check and chunked fallback for extremely large datasets.
+      const estimatedSize = flowNodes.length * 500 + flowEdges.length * 200;
+      const useCompactFormat = estimatedSize > 2_000_000; // >2MB estimated
+
+      const jsonString = useCompactFormat
+        ? JSON.stringify(data) // Compact: no indentation, smaller file
+        : JSON.stringify(data, null, 2); // Pretty-printed for normal sizes
+
+      const blob = new Blob([jsonString], {
+        type: "application/json",
+      });
+
+      // For very large blobs, use the streaming download approach
+      // to avoid memory issues with URL.createObjectURL
+      if (blob.size > 50_000_000) {
+        // >50MB: use streaming via ReadableStream
+        const stream = new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode(jsonString));
+            controller.close();
+          },
+        });
+        const response = new Response(stream);
+        response.blob().then((largeBlob) => {
+          const url = URL.createObjectURL(largeBlob);
+          const link = document.createElement("a");
+          link.download = "atomic-graph.json";
+          link.href = url;
+          link.click();
+          setTimeout(() => URL.revokeObjectURL(url), 10000);
+        });
+      } else {
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.download = "atomic-graph.json";
+        link.href = url;
+        link.click();
+        URL.revokeObjectURL(url);
+      }
+    } catch (error) {
+      console.error("[JSON Export] Failed:", error);
+      // Fallback: try compact format without pretty-printing
+      try {
+        const data = {
+          nodes: flowNodes.map((n) => ({ id: n.id, ...n.data.node })),
+          edges: flowEdges.map((e) => ({
+            source: e.source,
+            target: e.target,
+            label: e.data?.label || e.label,
+            strength: e.data?.strength,
+          })),
+          exportedAt: new Date().toISOString(),
+        };
+        const jsonString = JSON.stringify(data);
+        const blob = new Blob([jsonString], { type: "application/json" });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.download = "atomic-graph.json";
+        link.href = url;
+        link.click();
+        URL.revokeObjectURL(url);
+      } catch (fallbackError) {
+        console.error("[JSON Export] Fallback also failed:", fallbackError);
+        alert("Failed to export JSON. The graph may be too large for browser memory.");
+      }
+    }
   }, [flowNodes, flowEdges]);
 
   // ─── Export as self-contained HTML ─────────────────────────

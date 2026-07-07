@@ -27,8 +27,15 @@ You infer missing concepts, bridge gaps, and make hidden relationships explicit.
 QUALITY MATTERS: you preserve the writer's original meaning faithfully.
 You do NOT over-process, hallucinate, or add unnecessary complexity.
 When the original notes are already clear and complete, you recognise that and score high.
-Always respond with valid JSON only. No markdown, no explanation, no code fences.
-Every response must be a single valid JSON object parseable by JSON.parse().`;
+
+CRITICAL OUTPUT RULES:
+- Always respond with valid JSON only. No markdown, no explanation, no code fences.
+- Every response must be a single valid JSON object parseable by JSON.parse().
+- Be CONCISE in summaries: 1-2 short sentences max per node.
+- Keep titles short: 2-5 words.
+- Use minimal tags: 1-3 per node.
+- Do NOT repeat the input text verbatim in summaries — distill the core idea.
+- Avoid overly verbose edge labels — use 1-3 word specific verbs.`;
 
 // ─── AX Pipeline ───────────────────────────────────────────────
 
@@ -213,18 +220,15 @@ export class AXPipeline {
         ? `\n\n[This is part ${chunkIndex + 1} of ${totalChunks} of the input. Focus on concepts in this section. Use tags to link related ideas across sections.]`
         : "";
 
-    const prompt = `You are reasoning through the semantic space of someone's raw thinking.
+    const prompt = `Extract atomic concepts from these notes. Each concept = ONE idea only.
 
-STEP 1 — What are the atomic concepts?
-Break the notes into indivisible ideas — each concept must be ONE idea only.
-Do NOT merely list keywords from the text. Instead:
-- Identify every explicit concept the writer names
-- Infer implicit concepts the writer assumes but doesn't name (e.g. if they mention "RAG needs embeddings", the concept "vector similarity search" is implicit)
-- Surface the "glue" concepts that connect ideas but are left unsaid
-- Each concept gets a concise title and a 1-2 sentence summary explaining WHY it matters in this context
-- PRESERVE the writer's original intent. Do NOT rephrase in ways that change meaning.
-- Minor wording differences ("retains" vs "preserves", "uses" vs "employs") are NOT new concepts.
-- Use descriptive tags that help group related concepts across sections.
+Rules:
+- Identify explicit AND implicit concepts (what's assumed but not named)
+- Infer "glue" concepts that connect ideas but are left unsaid
+- Title: 2-5 words. Summary: 1-2 SHORT sentences explaining WHY it matters.
+- Preserve the writer's intent. Minor wording differences are NOT new concepts.
+- Tags: 1-3 descriptive tags for grouping.
+- Be CONCISE — do NOT repeat input text verbatim.
 
 Return JSON: { "nodes": [{ "id": "c1", "title": "...", "summary": "...", "tags": ["..."] }] }
 
@@ -353,22 +357,20 @@ ${chunk}`;
       .map((n) => `${n.id}: ${n.title}`)
       .join("\n");
 
-    const prompt = `You previously extracted atomic concepts, but the validation found specific gaps.
-Reason deeper — but ONLY where the critique identified real problems.
+    const prompt = `Refine concepts — fix ONLY the validation issues, nothing else.
 
 PREVIOUS CONCEPTS:
 ${nodesCompact}
 
 ORIGINAL NOTES:
-${rawNotes.slice(0, 3000)}${rawNotes.length > 3000 ? "\n… (notes truncated for brevity)" : ""}
+${rawNotes.slice(0, 2000)}${rawNotes.length > 2000 ? "\n…" : ""}
 
-IMPROVE by addressing ONLY the specific issues found:
-1. If a concept is truly missing (not just rephrased), add it.
-2. If a "bridge" concept genuinely connects two clusters, add it.
-3. If a concept is genuinely non-atomic (covers two distinct ideas), split it.
-4. Do NOT rephrase existing concepts just for style — preserve the writer's wording when it's accurate.
-5. Do NOT add speculative concepts that the writer didn't imply.
-6. Keep all existing valid concepts — only ADD or SPLIT where genuinely needed.
+Fix rules:
+- Add truly missing concepts (not rephrased ones)
+- Add bridge concepts that connect clusters
+- Split genuinely non-atomic concepts
+- Keep all existing valid concepts unchanged
+- Be CONCISE: short titles, brief summaries
 
 Return JSON: { "nodes": [{ "id": "c1", "title": "...", "summary": "...", "tags": ["..."] }] }`;
 
@@ -396,28 +398,26 @@ Return JSON: { "nodes": [{ "id": "c1", "title": "...", "summary": "...", "tags":
       .map((n) => `${n.id}: ${n.title}`)
       .join("\n");
 
-    const prompt = `You are mapping the RELATIONSHIPS between atomic concepts — both explicit and implicit.
+    const prompt = `Map relationships between these atomic concepts.
 
-Given these atomic nodes, identify semantic relationships. Do NOT stop at surface-level "related to" links.
-Instead, reason through:
-- DIRECT relationships: A enables B, A requires B, A is a subtype of B
-- IMPLICIT relationships: A and B are connected through C (but C wasn't stated)
-- CAUSAL chains: A leads to B which enables C
-- MISSING bridges: if two concepts seem disconnected, what implicit concept links them?
+Find both direct and implicit relationships:
+- Direct: A enables B, A requires B, A is a subtype of B
+- Implicit: A and B connected through unstated C
+- Causal: A leads to B which enables C
 
-Edge labels must be SPECIFIC verbs/phrases: "requires", "enables", "feeds into", "is mediated by", "constrains", "extends", NOT generic "related to".
+Edge labels: use SPECIFIC verbs ("requires", "enables", "feeds into", "constrains", "extends"), NOT generic "related to".
+Keep labels to 1-3 words.
 
-Strength (0.0-1.0): how certain and direct is this link?
-- 0.9+: definitionally true (e.g. "RAG requires embeddings")
-- 0.7-0.9: strongly implied (e.g. "embeddings enable vector search")
-- 0.4-0.7: inferred bridge (e.g. "agent loop connects tools to RAG")
-- 0.0-0.4: speculative but plausible
+Strength (0.0-1.0):
+- 0.9+: definitionally true
+- 0.7-0.9: strongly implied
+- 0.4-0.7: inferred bridge
+- 0.0-0.4: speculative
 
-QUALITY RULE: Only create edges where a REAL semantic relationship exists.
-Do NOT fabricate connections just to make the graph look more connected.
+Only create edges for REAL relationships. Do NOT fabricate connections.
+Return ONLY edges — do NOT repeat nodes.
 
-IMPORTANT: Return ONLY the edges array — do NOT repeat the nodes.
-Return JSON: { "edges": [{ "source": "nodeId", "target": "nodeId", "label": "specific relationship", "strength": 0.8 }] }
+Return JSON: { "edges": [{ "source": "nodeId", "target": "nodeId", "label": "verb", "strength": 0.8 }] }
 
 Nodes (id: title):
 ${nodeSummary}`;
@@ -461,52 +461,35 @@ ${nodeSummary}`;
     };
 
     // Truncate original notes if very large (validator doesn't need every word)
-    const notesForValidation = this.rawNotes.length > 6000
-      ? this.rawNotes.slice(0, 6000) + "\n… (notes truncated for validation)"
+    // Use a smaller limit to keep total prompt+response within token budgets
+    const notesForValidation = this.rawNotes.length > 4000
+      ? this.rawNotes.slice(0, 4000) + "\n… (notes truncated)"
       : this.rawNotes;
 
-    const prompt = `You are critically evaluating a knowledge graph for BOTH quality AND semantic fidelity.
+    const prompt = `Evaluate this knowledge graph for quality and semantic fidelity.
 
-The graph was built by reasoning through someone's raw notes. Your job is to judge whether the graph
-is a FAITHFUL and COMPLETE representation of the writer's thinking — not whether it looks impressive.
+Axes (weight: semantic fidelity > atomicity > completeness > relationships > structure):
+1. SEMANTIC FIDELITY: Does it preserve the writer's meaning? Minor wording changes don't lower score.
+2. ATOMICITY: Is each concept truly one idea?
+3. COMPLETENESS: Are implicit concepts captured?
+4. RELATIONSHIP QUALITY: Specific edge labels ("requires") vs lazy ones ("related to")?
+5. STRUCTURAL INTEGRITY: Orphan nodes? Missing cross-links?
 
-Evaluate on these axes:
+Scoring:
+- 0.90-1.00: Faithful representation, minor wording differences only
+- 0.75-0.89: Minor gaps
+- 0.50-0.74: Significant gaps
+- 0.00-0.49: Major problems
 
-1. SEMANTIC FIDELITY (most important): Does the graph faithfully preserve the writer's meaning?
-   - Minor wording changes ("retains" vs "preserves") do NOT lower the score — meaning is preserved.
-   - Any concept that distorts, over-interprets, or hallucinates beyond what the writer intended DOES lower the score.
-   - If the original notes are already clear and well-structured, the graph should score HIGH (0.90+).
+Be FAIR — clear notes + good graph = high score. Don't invent reasons to lower it.
 
-2. ATOMICITY: Is every concept truly one idea? Or are some secretly two concepts mashed together?
-
-3. COMPLETENESS: Are there implicit concepts the writer assumed but the graph missed?
-   Think about what's BETWEEN the lines — what bridges connect disconnected clusters?
-   But do NOT penalise if the notes are simple and don't have hidden depth.
-
-4. RELATIONSHIP QUALITY: Are edges specific (e.g. "requires", "enables") or lazy (e.g. "related to")?
-
-5. STRUCTURAL INTEGRITY: Are there orphan nodes with no edges? Dense clusters missing cross-links?
-
-SCORING GUIDANCE:
-- 0.90-1.00: The graph faithfully represents the notes. Minor wording differences only. Well-structured input.
-- 0.75-0.89: Good but has minor gaps — a missing bridge concept or a few generic edge labels.
-- 0.50-0.74: Significant gaps — missing concepts, broken relationships, or non-atomic nodes.
-- 0.00-0.49: Major problems — hallucinated concepts, distorted meaning, or severely incomplete.
-
-Be FAIR. If the notes are clear and the graph captures them well, do NOT invent reasons to lower the score.
-If the only issues are minor wording changes that don't affect meaning, score 0.90+.
-
-ORIGINAL NOTES (for comparison):
+ORIGINAL NOTES:
 ${notesForValidation}
 
 Graph: ${JSON.stringify(graphCompact)}
 
-Return JSON: {
-  "score": 0.85,
-  "issues": ["specific issue 1", "specific issue 2"],
-  "suggestions": ["specific fix 1", "specific fix 2"]
-}
-Only list issues that AFFECT MEANING or STRUCTURE, not cosmetic wording differences.`;
+Return JSON: { "score": 0.85, "issues": ["..."], "suggestions": ["..."] }
+Only list issues affecting MEANING or STRUCTURE.`;
 
     const result = await this.client.chatJSON<ValidationResult>(
       prompt,
@@ -535,23 +518,22 @@ Only list issues that AFFECT MEANING or STRUCTURE, not cosmetic wording differen
       edges: graph.edges.map((e) => ({ source: e.source, target: e.target, label: e.label, strength: e.strength })),
     };
 
-    const prompt = `The self-critique found these SPECIFIC issues in your knowledge graph.
-Fix ONLY these issues — do NOT rework everything.
+    const prompt = `Fix ONLY these specific issues in the knowledge graph.
 
-CRITICAL QUALITY RULES:
-- Preserve the writer's original wording where it's accurate and meaningful.
-- Only change what the critique identified as genuinely broken.
-- Do NOT rephrase for style — only fix SEMANTIC or STRUCTURAL problems.
-- If the critique says "missing bridge concept", INFER what that bridge is and add it.
-- If it says "edge too generic", replace with a specific verb — but keep the same meaning.
-- If it says "concept not atomic", SPLIT it into two and link them.
-- Do NOT add speculative concepts that the writer didn't imply.
+Rules:
+- Preserve writer's wording where accurate
+- Only fix SEMANTIC or STRUCTURAL problems, not style
+- Missing bridge? INFER and add it.
+- Generic edge? Replace with specific verb.
+- Non-atomic concept? SPLIT into two and link.
+- No speculative additions.
+- Be CONCISE: short titles, brief summaries, 1-3 word edge labels.
 
-IMPORTANT: Return the FULL corrected graph with both nodes and edges. Keep all existing nodes and edges that don't need changes. Only ADD or CHANGE what's needed to fix the listed issues.
+Return the FULL corrected graph (both nodes and edges). Keep unchanged items as-is.
 
-Return JSON: { "nodes": [{ "id": "c1", "title": "...", "summary": "...", "tags": ["..."] }], "edges": [{ "source": "nodeId", "target": "nodeId", "label": "...", "strength": 0.8 }] }
+Return JSON: { "nodes": [{ "id": "c1", "title": "...", "summary": "...", "tags": ["..."] }], "edges": [{ "source": "id", "target": "id", "label": "verb", "strength": 0.8 }] }
 
-Issues to fix:
+Issues:
 ${issues.map((i) => `- ${i}`).join("\n")}
 
 Current graph: ${JSON.stringify(graphCompact)}`;

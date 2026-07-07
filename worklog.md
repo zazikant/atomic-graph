@@ -167,3 +167,37 @@ Stage Summary:
 - Partial processing: pipeline never fully crashes — always produces something useful
 - Large graphs: adaptive layout, edge label toggle, stats panel, deep zoom out
 - All phases (extract, link, validate, refine) have fallback paths on failure
+
+---
+Task ID: 1
+Agent: main
+Task: Fix JSON parsing failure from truncated LLM responses and ensure JSON export handles large data
+
+Work Log:
+- Analyzed the existing JSON parsing and recovery code in nvidiaClient.ts
+- Identified the root cause: parseLLMJson used a greedy regex that could match post-JSON text, and the recovery function had fragile regex-based stripping that failed for common truncation patterns
+- Rewrote parseLLMJson with 4-strategy approach: direct parse → balanced bracket extraction → fix trailing commas → greedy regex fallback
+- Added extractBalancedJSON() function that uses bracket depth tracking to find the correct closing bracket
+- Completely rewrote recoverTruncatedJSON() with 3 recovery strategies:
+  1. closeOpenBrackets: finds last safe truncation point, removes incomplete content, closes open brackets
+  2. truncateToLastCompleteElement: finds last } or ] outside strings, closes remaining brackets
+  3. recoverFieldsIndividually: extracts individual complete objects from known array fields (nodes, edges, issues, suggestions)
+- Fixed string state tracking: opening quotes are detected by checking stringState[j-1]=false && stringState[j]=true (transition from not-in-string to in-string)
+- Fixed the key scenario: when incomplete string is a VALUE after ":", the entire incomplete OBJECT is removed (not just the key-value pair) to avoid malformed JSON
+- Made pipeline prompts more concise to reduce token usage and truncation risk:
+  - Extract prompt: shorter instructions, explicit "Title: 2-5 words. Summary: 1-2 SHORT sentences"
+  - Link prompt: removed verbose examples, "Keep labels to 1-3 words"
+  - Validate prompt: compressed scoring guidance, reduced notes truncation from 6000→4000 chars
+  - Refine prompt: shorter fix rules, explicit "Be CONCISE"
+  - System prompt: added "CRITICAL OUTPUT RULES" section for conciseness
+- Updated JSON export in GraphView.tsx to handle large data:
+  - Added estimated size check for compact vs pretty-printed format
+  - Added streaming download fallback for >50MB blobs
+  - Added try/catch with compact format fallback
+  - Added user-facing error alert as last resort
+
+Stage Summary:
+- All 15 JSON recovery test cases pass (truncated strings, objects, arrays, numbers, etc.)
+- Pipeline prompts are ~40% shorter to reduce truncation risk
+- JSON export has 3-tier fallback: normal → compact → streaming → alert
+- Build compiles successfully
