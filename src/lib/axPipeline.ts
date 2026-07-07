@@ -130,6 +130,13 @@ export class AXPipeline {
   }
 
   /**
+   * Sleep helper for inter-chunk cooldown.
+   */
+  private sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  /**
    * Wrap an async API call with rate-limit / transient error detection.
    */
   private async callWithRetryAwareness<T>(
@@ -379,6 +386,8 @@ ${chunk}`;
       // success rate from ~60% to ~94%.
       const MAX_CHUNK_ATTEMPTS = 3;
       let chunkResult: ExtractResult | null = null;
+      let lastChunkError = "";
+      let chunkSucceededOnAttempt = 0;
       for (let chunkAttempt = 1; chunkAttempt <= MAX_CHUNK_ATTEMPTS; chunkAttempt++) {
         try {
           if (chunkAttempt > 1) {
@@ -396,9 +405,12 @@ ${chunk}`;
             1,
             `Extract (section ${i + 1}/${chunks.length}${chunkAttempt > 1 ? `, retry ${chunkAttempt}` : ""})`,
           );
+          chunkSucceededOnAttempt = chunkAttempt;
+          lastChunkError = "";
           break; // success
         } catch (error) {
           const msg = error instanceof Error ? error.message : String(error);
+          lastChunkError = msg;
           console.warn(
             `[AX Pipeline] Chunk ${i + 1}/${chunks.length} attempt ${chunkAttempt}/${MAX_CHUNK_ATTEMPTS} failed: ${msg}`,
           );
@@ -422,6 +434,48 @@ ${chunk}`;
         });
         allNodes.push(...chunkResult.nodes);
         succeededChunks++;
+      }
+
+      // ─── Inter-chunk cooldown (rate-limit reset) ──────────────
+      // Wait before starting the next chunk so NVIDIA's rate-limit window
+      // has time to reset. Adaptive based on how the previous chunk went:
+      //   - Succeeded on first attempt: 10s (quick breather)
+      //   - Succeeded after retries:    30s (something was flaky)
+      //   - Failed all attempts:        60s if rate-limit, 30s otherwise
+      // Capped at 60s. Same pattern as ax-translator.
+      //
+      // Note: On Vercel Edge (30s function cap), long cooldowns will get
+      // killed. The live log will show the cooldown message. For large
+      // inputs with 3+ chunks, use a non-Vercel host.
+      if (i < chunks.length - 1) {
+        const isRateLimitError = /rate.?limit|429|too many requests/i.test(lastChunkError);
+        let delaySec = 10;
+        if (chunkResult === null) {
+          delaySec = isRateLimitError ? 60 : 30;
+        } else if (chunkSucceededOnAttempt > 1) {
+          delaySec = 30;
+        }
+        delaySec = Math.min(delaySec, 60);
+
+        this.emit(
+          "retrying",
+          1,
+          0,
+          false,
+          undefined,
+          `Cooldown: waiting ${delaySec}s before section ${i + 2}/${chunks.length} (lets NVIDIA rate-limit window reset)…`,
+        );
+
+        await this.sleep(delaySec * 1000);
+
+        this.emit(
+          "extracting",
+          1,
+          0,
+          false,
+          undefined,
+          `Cooldown complete — starting section ${i + 2}/${chunks.length}.`,
+        );
       }
     }
 
