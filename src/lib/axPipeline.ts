@@ -130,10 +130,43 @@ export class AXPipeline {
   }
 
   /**
-   * Sleep helper for inter-chunk cooldown.
+   * Sleep helper for inter-chunk cooldown and retry backoff.
    */
   private sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  /**
+   * Compute backoff delay BEFORE a retry attempt. Returns 0 for timeout
+   * errors (we already waited 18s for the timeout — no need to add more
+   * delay) and 10-15s for rate-limit errors (gives NVIDIA time to reset).
+   *
+   * This is the key fix: previously all retries were immediate, so 3
+   * rate-limited attempts would fail in ~2s with zero recovery time.
+   * Now rate-limit retries get a 10-15s pause.
+   */
+  private computeRetryBackoff(errorMsg: string): { delayMs: number; reason: string } {
+    const msg = (errorMsg || "").toLowerCase();
+    const isRateLimit =
+      msg.includes("rate limit") ||
+      msg.includes("429") ||
+      msg.includes("too many requests") ||
+      msg.includes("retry attempt");
+    const isTimeout =
+      msg.includes("timeout") ||
+      msg.includes("aborted") ||
+      msg.includes("timed out");
+
+    if (isRateLimit) {
+      // 10s — rate limits usually clear in 5-15s
+      return { delayMs: 10_000, reason: "rate-limit backoff" };
+    }
+    if (isTimeout) {
+      // 0s — we already waited 18s for the timeout, no need to add more
+      return { delayMs: 0, reason: "no backoff (timeout already waited)" };
+    }
+    // 5s — generic backoff for other errors
+    return { delayMs: 5_000, reason: "backoff" };
   }
 
   /**
@@ -391,14 +424,21 @@ ${chunk}`;
       for (let chunkAttempt = 1; chunkAttempt <= MAX_CHUNK_ATTEMPTS; chunkAttempt++) {
         try {
           if (chunkAttempt > 1) {
+            // Rate-limit-aware backoff: 10s for rate limits, 0s for timeouts
+            const backoff = this.computeRetryBackoff(lastChunkError);
             this.emit(
               "retrying",
               1,
               0,
               false,
               undefined,
-              `Section ${i + 1} attempt ${chunkAttempt}/${MAX_CHUNK_ATTEMPTS} — retrying…`,
+              backoff.delayMs > 0
+                ? `Section ${i + 1} attempt ${chunkAttempt}/${MAX_CHUNK_ATTEMPTS} in ${backoff.delayMs / 1000}s (${backoff.reason})…`
+                : `Section ${i + 1} attempt ${chunkAttempt}/${MAX_CHUNK_ATTEMPTS} — retrying…`,
             );
+            if (backoff.delayMs > 0) {
+              await this.sleep(backoff.delayMs);
+            }
           }
           chunkResult = await this.callWithRetryAwareness(
             () => this.extractChunk(chunks[i], i, chunks.length),
@@ -761,52 +801,73 @@ Current graph: ${JSON.stringify(graphCompact)}`;
         }
       }
 
-      // Step 2: LINK — surface hidden relationships
-      // LINK is the step most likely to time out (it returns larger JSON
-      // than EXTRACT — 5-15 edges with labels + strengths). Without edges
-      // the graph is useless, so we retry up to 2 extra times before
-      // falling back to no-edges.
+      // ─── Step 2: LINK — surface hidden relationships ─────────────
+      // LINK is mandatory — a graph without edges is useless. If all 3
+      // attempts fail, we throw and the pipeline stops (no validate, no
+      // partial graph). The user sees a clear error and can click Generate
+      // again for a fresh batch of attempts.
+      //
+      // Each /api/nvidia-stream call has an 18s timeout × 1 attempt.
+      // Rate-limit-aware backoff between retries: 10s for 429 errors,
+      // 0s for timeouts (we already waited 18s).
       this.emit("linking", attempt, 0, false);
       let linked: LinkResult | null = null;
       const MAX_LINK_ATTEMPTS = 3;
+      let lastLinkError = "";
       for (let linkAttempt = 1; linkAttempt <= MAX_LINK_ATTEMPTS; linkAttempt++) {
         try {
           if (linkAttempt > 1) {
+            const backoff = this.computeRetryBackoff(lastLinkError);
             this.emit(
               "retrying",
               attempt,
               0,
               false,
               undefined,
-              `Link attempt ${linkAttempt}/${MAX_LINK_ATTEMPTS} — previous call failed, retrying…`,
+              backoff.delayMs > 0
+                ? `Link attempt ${linkAttempt}/${MAX_LINK_ATTEMPTS} in ${backoff.delayMs / 1000}s (${backoff.reason})…`
+                : `Link attempt ${linkAttempt}/${MAX_LINK_ATTEMPTS} — retrying…`,
             );
+            if (backoff.delayMs > 0) {
+              await this.sleep(backoff.delayMs);
+            }
           }
           linked = await this.callWithRetryAwareness(
             () => this.link(extracted),
             attempt,
             `Link${linkAttempt > 1 ? ` (retry ${linkAttempt})` : ""}`,
           );
+          lastLinkError = "";
           break; // success
         } catch (linkError) {
           const msg = linkError instanceof Error ? linkError.message : String(linkError);
+          lastLinkError = msg;
           console.warn(
             `[AX Pipeline] Link attempt ${linkAttempt}/${MAX_LINK_ATTEMPTS} failed: ${msg}`,
           );
           if (linkAttempt === MAX_LINK_ATTEMPTS) {
+            // Edges are mandatory — fail the pipeline instead of continuing
+            // with nodes only. The user gets a clear error and can retry.
             this.emit(
               "retrying",
               attempt,
               0,
               false,
               undefined,
-              `Link failed ${MAX_LINK_ATTEMPTS}× — continuing with nodes only (no edges). Click Generate again to retry.`,
+              `Link failed ${MAX_LINK_ATTEMPTS}× — edges are mandatory. Aborting pipeline. Please click Generate again.`,
             );
           }
         }
       }
-      // Fallback: if all link attempts failed, use nodes without edges
+
+      // Edges are mandatory: if LINK failed all attempts, abort the pipeline
+      // with a clear error instead of showing a graph with no edges.
       if (linked === null) {
-        linked = { nodes: extracted.nodes, edges: [] };
+        throw new Error(
+          `Could not generate edges for this graph after ${MAX_LINK_ATTEMPTS} attempts. ` +
+          `Last error: ${lastLinkError}. Please click Generate again — NVIDIA's rate limit ` +
+          `may have cleared by then.`
+        );
       }
 
       // Step 3: VALIDATE — quality-aware self-critique
