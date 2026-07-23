@@ -15,8 +15,10 @@ import { NextRequest } from "next/server";
  *   data: {"type":"error","message":"...","ts":...}
  *
  * Each LLM call is a "controlled call":
- *   - 12s per-call hard timeout (gpt-oss-120b on Vercel Edge can take 8-15s TTFB;
- *     12s is the sweet spot — gives slow calls room, fails fast on hangs)
+ *   - 120s per-call hard timeout (matches ax-translator). gpt-oss-120b on
+ *     Vercel Edge can take 8-15s TTFB for larger outputs; 120s gives the
+ *     model comfortable room. On Hobby Vercel kills the function at 30s
+ *     first, so the effective budget is the 30s cap regardless.
  *   - Up to 2 attempts (1 retry) with 500ms backoff
  *   - Structured logs at start / ttfb / done / timeout / retry / error
  *
@@ -32,17 +34,19 @@ export const dynamic = "force-dynamic";
 export const runtime = "edge";
 
 const NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1";
-// Per-call timeout: 28s (was 18s).
+// Per-call timeout: 120s (was 28s, was 18s). Matches ax-translator's
+// DEFAULT_CALL_TIMEOUT_MS (google-ads-subagent-vercel pattern).
 // LINK step with 30+ nodes takes 20-25s for gpt-oss-120b to reason through
-// all possible relationships. 18s was too tight and caused LINK to time out
-// every time on production-scale graphs (50+ nodes).
+// all possible relationships; 120s is a generous ceiling for the largest
+// graphs.
 //
-// 28s + buffer = under Vercel Edge's 30s function cap. Pipeline-level retry
-// in axPipeline.ts handles additional attempts.
+// On Hobby Vercel Edge still kills the function at 30s, so 120s is a dead
+// ceiling there. On Pro (300s Edge cap) this gives the model comfortable
+// room.
 //
 // 1 attempt per /api/nvidia-stream call — multiple attempts would exceed
 // the 30s cap.
-const CALL_TIMEOUT_MS = 28_000;
+const CALL_TIMEOUT_MS = 120_000;
 const MAX_ATTEMPTS = 1;
 
 interface SSEEvent {
