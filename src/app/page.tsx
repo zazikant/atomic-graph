@@ -1,11 +1,12 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useCallback } from "react";
 import { ConfigBar } from "@/components/ConfigBar";
 import { NotesInput } from "@/components/NotesInput";
 import { JsonImport } from "@/components/JsonImport";
 import { PipelineStatus } from "@/components/PipelineStatus";
 import { GraphView } from "@/components/GraphView";
+import { PinLock } from "@/components/PinLock";
 import { useGraphStore } from "@/store/graphStore";
 import { FileText, GitBranch, Network, FileJson } from "lucide-react";
 
@@ -13,6 +14,13 @@ type MobileTab = "notes" | "json" | "graph" | "pipeline";
 type SidebarTab = "notes" | "json";
 
 export default function Home() {
+  const [isUnlocked, setIsUnlocked] = useState(false);
+  const handleUnlock = useCallback(() => setIsUnlocked(true), []);
+
+  if (!isUnlocked) {
+    return <PinLock onUnlock={handleUnlock} />;
+  }
+
   const [mobileTab, setMobileTab] = useState<MobileTab>("notes");
   const [sidebarTab, setSidebarTab] = useState<SidebarTab>("notes");
   const { flowNodes, isRunning } = useGraphStore();

@@ -239,3 +239,189 @@
     height: 100dvh;
   }
 }
+
+/* ── PIN Lock Screen ── */
+:root {
+  --pin-bg: oklch(0.07 0.02 280);
+  --pin-surface: oklch(0.12 0.03 280);
+  --pin-surface2: oklch(0.18 0.03 280);
+  --pin-border: oklch(0.3 0.05 280);
+  --pin-accent: oklch(0.65 0.2 275);
+  --pin-accent-light: oklch(0.25 0.08 280);
+  --pin-text: oklch(0.9 0.02 280);
+  --pin-muted: oklch(0.65 0.04 280);
+  --pin-error: oklch(0.7 0.2 25);
+}
+
+.pin-lock-overlay {
+  position: fixed;
+  inset: 0;
+  background: var(--pin-bg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+  padding: 1rem;
+}
+.pin-lock-card {
+  background: var(--pin-surface);
+  border: 1px solid var(--pin-border);
+  border-radius: 16px;
+  padding: 2.5rem 2rem 2rem;
+  width: 100%;
+  max-width: 400px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+  text-align: center;
+  font-family: var(--font-geist-sans), system-ui, sans-serif;
+}
+.pin-lock-brand { margin-bottom: 1.5rem; }
+.pin-lock-logo {
+  font-family: var(--font-geist-sans), system-ui, sans-serif;
+  font-weight: 700;
+  font-size: 18px;
+  letter-spacing: -0.02em;
+  color: var(--pin-text);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.pin-lock-logo-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--pin-accent);
+}
+.pin-lock-icon {
+  color: var(--pin-accent);
+  margin-bottom: 1rem;
+  opacity: 0.85;
+}
+.pin-lock-title {
+  font-family: var(--font-geist-sans), system-ui, sans-serif;
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--pin-text);
+  margin: 0 0 0.375rem;
+}
+.pin-lock-subtitle {
+  font-size: 13px;
+  color: var(--pin-muted);
+  margin: 0 0 1.5rem;
+}
+.pin-dots {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 1.5rem;
+}
+.pin-dot {
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  border: 2px solid var(--pin-border);
+  background: var(--pin-surface2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--pin-text);
+  transition: all 0.15s;
+}
+.pin-dot.filled {
+  background: var(--pin-accent-light);
+  border-color: var(--pin-accent);
+}
+.pin-dot.active {
+  border-color: var(--pin-accent);
+  box-shadow: 0 0 0 2px oklch(0.65 0.2 275 / 0.25);
+}
+.pin-form {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  position: relative;
+}
+.pin-hidden-input {
+  position: absolute;
+  opacity: 0;
+  width: 100%;
+  height: 100%;
+  top: -200px;
+  left: 0;
+  cursor: default;
+  font-size: 16px;
+}
+.pin-submit-btn {
+  font-family: var(--font-geist-sans), system-ui, sans-serif;
+  font-size: 14px;
+  font-weight: 700;
+  padding: 12px 32px;
+  border-radius: 8px;
+  border: none;
+  background: var(--pin-accent);
+  color: oklch(0.98 0 0);
+  cursor: pointer;
+  transition: all 0.2s;
+  letter-spacing: 0.02em;
+  margin-bottom: 0.75rem;
+  width: 100%;
+}
+.pin-submit-btn:hover:not(:disabled) {
+  background: oklch(0.55 0.2 275);
+  transform: translateY(-1px);
+}
+.pin-submit-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.pin-toggle-visibility {
+  background: none;
+  border: none;
+  color: var(--pin-muted);
+  font-family: var(--font-geist-sans), system-ui, sans-serif;
+  font-size: 12px;
+  cursor: pointer;
+  padding: 4px 8px;
+  margin-bottom: 0.75rem;
+  transition: color 0.15s;
+}
+.pin-toggle-visibility:hover { color: var(--pin-text); }
+.pin-error {
+  font-family: var(--font-geist-sans), system-ui, sans-serif;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--pin-error);
+  margin-bottom: 0.75rem;
+}
+.pin-admin-info {
+  font-size: 11px;
+  color: var(--pin-muted);
+  margin-top: 0.5rem;
+  font-family: var(--font-geist-sans), system-ui, sans-serif;
+  opacity: 0.6;
+}
+@keyframes pin-shake {
+  0%, 100% { transform: translateX(0); }
+  10%, 30%, 50%, 70%, 90% { transform: translateX(-6px); }
+  20%, 40%, 60%, 80% { transform: translateX(6px); }
+}
+.pin-shake { animation: pin-shake 0.6s ease-in-out; }
+@media (max-width: 768px) {
+  .pin-lock-overlay { padding: 0; }
+  .pin-lock-card {
+    border-radius: 0;
+    max-width: 100%;
+    min-height: 100vh;
+    min-height: 100dvh;
+    padding: 3rem 1.5rem 2rem;
+    justify-content: center;
+  }
+  .pin-dot { width: 32px; height: 32px; font-size: 14px; }
+  .pin-dots { gap: 8px; }
+  .pin-lock-title { font-size: 18px; }
+}
