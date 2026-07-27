@@ -14,16 +14,18 @@ type MobileTab = "notes" | "json" | "graph" | "pipeline";
 type SidebarTab = "notes" | "json";
 
 export default function Home() {
+  // PIN lock state — app is hidden until unlocked
   const [isUnlocked, setIsUnlocked] = useState(false);
-  const handleUnlock = useCallback(() => setIsUnlocked(true), []);
-
-  if (!isUnlocked) {
-    return <PinLock onUnlock={handleUnlock} />;
-  }
-
   const [mobileTab, setMobileTab] = useState<MobileTab>("notes");
   const [sidebarTab, setSidebarTab] = useState<SidebarTab>("notes");
   const { flowNodes, isRunning } = useGraphStore();
+
+  const handleUnlock = useCallback(() => setIsUnlocked(true), []);
+
+  // Show PIN lock screen if not yet unlocked
+  if (!isUnlocked) {
+    return <PinLock onUnlock={handleUnlock} />;
+  }
 
   return (
     <div className="flex flex-col h-[100dvh] bg-[#0a0a1a] overflow-hidden">
