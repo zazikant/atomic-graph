@@ -62,10 +62,10 @@ export interface AppConfig {
   confidenceThreshold: number;
 }
 
-export type NvidiaModel = "openai/gpt-oss-120b";
+export type NvidiaModel = "openai/gpt-oss-20b";
 
 export const NVIDIA_MODELS: { value: NvidiaModel; label: string }[] = [
-  { value: "openai/gpt-oss-120b", label: "GPT-OSS 120B" },
+  { value: "openai/gpt-oss-20b", label: "GPT-OSS 120B" },
 ];
 
 // ─── Cluster Colour Palette ──────────────────────────────────

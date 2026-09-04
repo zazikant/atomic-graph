@@ -90,7 +90,7 @@ function loadStoredConfig(): AppConfig {
   if (typeof window === "undefined") {
     return {
       apiKey: DEFAULT_API_KEY,
-      model: "openai/gpt-oss-120b",
+      model: "openai/gpt-oss-20b",
       iterations: DEFAULT_ITERATIONS,
       confidenceThreshold: DEFAULT_THRESHOLD,
     };
@@ -104,7 +104,7 @@ function loadStoredConfig(): AppConfig {
       // values are missing or out of range (older clients may have 3 / 0.75).
       return {
         ...parsed,
-        model: "openai/gpt-oss-120b",
+        model: "openai/gpt-oss-20b",
         iterations:
           typeof parsed.iterations === "number" && parsed.iterations >= 1 && parsed.iterations <= 5
             ? parsed.iterations
@@ -122,7 +122,7 @@ function loadStoredConfig(): AppConfig {
   }
   return {
     apiKey: DEFAULT_API_KEY,
-    model: "openai/gpt-oss-120b",
+    model: "openai/gpt-oss-20b",
     iterations: DEFAULT_ITERATIONS,
     confidenceThreshold: DEFAULT_THRESHOLD,
   };
