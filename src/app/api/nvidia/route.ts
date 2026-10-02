@@ -3,12 +3,12 @@ import { NextRequest, NextResponse } from "next/server";
 const NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1";
 
 // Edge runtime — Vercel's Node serverless path silently hangs on
-// openai/gpt-oss-120b (confirmed via extensive testing on the sister
-// project ax-translator). Edge uses a different egress that works for
-// gpt-oss-120b. Streaming (stream:true + drain) is required because
-// gpt-oss-120b emits a long reasoning_content buffer before the final
-// answer, and Vercel's fetch appears to hold non-streamed responses
-// until the entire payload is ready.
+// openai/gpt-oss models (confirmed via extensive testing on the sister
+// project ax-translator). Edge uses a different egress that works.
+// Streaming (stream:true + drain) is required because gpt-oss emits a
+// long reasoning_content buffer before the final answer, and Vercel's
+// fetch appears to hold non-streamed responses until the entire payload
+// is ready.
 export const maxDuration = 30;
 export const runtime = "edge";
 export const dynamic = "force-dynamic";
@@ -20,9 +20,24 @@ export const dynamic = "force-dynamic";
 
 // ─── Retry Configuration ────────────────────────────────────
 // Edge runtime cap is 30s. With 2s backoff × 2 retries we still leave
-// room for one full NVIDIA call (~5-10s on gpt-oss-120b).
+// room for one full NVIDIA call (~5-10s on gpt-oss).
 const MAX_RETRIES = 2;
 const RETRY_DELAY_MS = 2_000;
+
+// Max auto-continue rounds when the model returns finish_reason === 'length'.
+// Each round re-calls the model with the partial output appended as an
+// assistant message, asking it to continue. 3 rounds gives up to 4 total
+// calls × max_tokens each of effective output capacity — enough for large
+// knowledge graphs that would otherwise truncate mid-JSON.
+const DEFAULT_MAX_CONTINUATIONS = 3;
+
+// Generic continuation prompt used when the model returns finish_reason:'length'.
+// This does NOT modify the caller's system/user prompts — it's a fixed
+// instruction appended only when a continuation round is needed. Works for
+// both free-form text AND JSON output: the model sees its partial output
+// in the assistant message and continues from exactly where it left off.
+const CONTINUE_USER_PROMPT =
+  'Continue your previous response from exactly where you left off. Do not repeat any text you have already produced. Do not add any preamble, acknowledgements, or summary — output only the continuation.';
 
 /**
  * Status codes that warrant a retry (transient / rate-limit errors).
@@ -74,9 +89,11 @@ function describeStatus(status: number): string {
  * chat.completion-shaped JSON object so existing client code
  * (which expects response.choices[0].message.content) keeps working.
  *
- * Reasoning models (e.g. GPT-OSS 120B) sometimes put the actual output
+ * Reasoning models (e.g. GPT-OSS) sometimes put the actual output
  * in `reasoning_content` when `content` is empty (e.g. when max_tokens
  * was hit during reasoning). We fall back to reasoning_content.
+ *
+ * Captures finish_reason so the caller can decide whether to auto-continue.
  */
 async function drainStreamToCompletion(
   response: Response,
@@ -143,7 +160,7 @@ async function drainStreamToCompletion(
 }
 
 /**
- * Server-side proxy for Nvidia NIM API.
+ * Server-side proxy for Nvidia NIM API — with auto-continue on truncation.
  *
  * Why: The browser blocks direct requests to integrate.api.nvidia.com
  * due to CORS (no Access-Control-Allow-Origin header). This API route
@@ -152,6 +169,11 @@ async function drainStreamToCompletion(
  * Features:
  * - Retry up to 2 times on transient errors (429, 5xx) with 2-second delay
  * - Streams the response from NVIDIA and reconstructs chat.completion JSON
+ * - Auto-continues when finish_reason === 'length' (up to 3 rounds):
+ *   sends another call with the partial output appended as an assistant
+ *   message + a generic "continue from where you left off" user prompt,
+ *   then concatenates. Critical for JSON output (knowledge graphs) where
+ *   truncation produces partial, unparseable JSON.
  * - Graceful error handling with descriptive messages
  * - Passes through retry metadata so the client can display status
  *
@@ -187,112 +209,180 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const requestBody = JSON.stringify({
-      model,
-      messages,
-      temperature: temperature ?? 0.7,
-      max_tokens: max_tokens ?? 32768,
-      stream: true, // Streaming required — gpt-oss-120b hangs on Vercel with stream:false
-    });
+    const effectiveMaxTokens = max_tokens ?? 32768;
+    const maxContinuations = DEFAULT_MAX_CONTINUATIONS;
 
-    // ─── Retry Loop ───────────────────────────────────────────
-    let lastError: string | null = null;
-    let lastStatus = 0;
+    // ─── Auto-continue loop ──────────────────────────────────
+    // Accumulate content across the original call + continuation rounds.
+    let fullContent = "";
+    let fullReasoning = "";
+    let continuations = 0;
+    let stillTruncated = false;
+    let lastFinishReason: string | null = null;
+    let retryMeta: { attempts: number; succeeded: boolean } | null = null;
 
-    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-      let nvidiaResponse: Response;
+    // The messages array may grow across continuation rounds.
+    let roundMessages = messages as { role: string; content: string }[];
 
-      try {
-        nvidiaResponse = await fetch(`${NVIDIA_BASE_URL}/chat/completions`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${effectiveApiKey}`,
-            Accept: "text/event-stream",
-          },
-          body: requestBody,
-        });
-      } catch (fetchError) {
-        // Network-level error (DNS, timeout, connection refused)
-        const msg =
-          fetchError instanceof Error
-            ? fetchError.message
-            : "Network error contacting Nvidia API";
+    for (let round = 0; round <= maxContinuations; round++) {
+      const requestBody = JSON.stringify({
+        model,
+        messages: roundMessages,
+        temperature: temperature ?? 0.7,
+        max_tokens: effectiveMaxTokens,
+        stream: true, // Streaming required — gpt-oss hangs on Vercel with stream:false
+      });
 
-        lastError = `Network error: ${msg}`;
-        lastStatus = 0;
+      // ─── Retry Loop (per round) ───────────────────────────
+      let lastError: string | null = null;
+      let lastStatus = 0;
+      let roundData: Record<string, unknown> | null = null;
 
-        if (attempt < MAX_RETRIES) {
-          console.warn(
-            `[Nvidia Proxy] Attempt ${attempt}/${MAX_RETRIES} failed — ${msg}. Retrying in ${RETRY_DELAY_MS / 1000}s…`
-          );
-          await sleep(RETRY_DELAY_MS);
-          continue;
+      for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+        let nvidiaResponse: Response;
+
+        try {
+          nvidiaResponse = await fetch(`${NVIDIA_BASE_URL}/chat/completions`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${effectiveApiKey}`,
+              Accept: "text/event-stream",
+            },
+            body: requestBody,
+          });
+        } catch (fetchError) {
+          const msg =
+            fetchError instanceof Error
+              ? fetchError.message
+              : "Network error contacting Nvidia API";
+          lastError = `Network error: ${msg}`;
+          lastStatus = 0;
+          if (attempt < MAX_RETRIES) {
+            await sleep(RETRY_DELAY_MS);
+            continue;
+          }
+          break;
         }
+
+        // ─── Success ───────────────────────────────────────
+        if (nvidiaResponse.ok) {
+          roundData = await drainStreamToCompletion(nvidiaResponse, model);
+          if (attempt > 1) {
+            retryMeta = { attempts: attempt, succeeded: true };
+          }
+          break;
+        }
+
+        // ─── Non-retryable error — return immediately ──────
+        const errorText = await nvidiaResponse.text().catch(() => "Unknown error");
+        lastStatus = nvidiaResponse.status;
+        lastError = errorText.slice(0, 500);
+
+        if (!RETRYABLE_STATUS_CODES.has(nvidiaResponse.status)) {
+          console.error(
+            `[Nvidia Proxy] Non-retryable error (${nvidiaResponse.status}): ${lastError}`
+          );
+          return NextResponse.json(
+            {
+              error: describeStatus(nvidiaResponse.status),
+              details: lastError,
+              retryable: false,
+            },
+            { status: nvidiaResponse.status }
+          );
+        }
+
+        // ─── Retryable error ───────────────────────────────
+        if (attempt < MAX_RETRIES) {
+          await sleep(RETRY_DELAY_MS);
+        }
+      }
+
+      if (!roundData) {
+        // All retries exhausted for this round
+        return NextResponse.json(
+          {
+            error: lastStatus
+              ? `${describeStatus(lastStatus)} — all ${MAX_RETRIES} attempts failed`
+              : `Network error — all ${MAX_RETRIES} attempts failed`,
+            details: lastError,
+            retryable: true,
+            attemptsExhausted: true,
+          },
+          { status: lastStatus || 502 }
+        );
+      }
+
+      // Extract content + finish_reason from this round
+      const choice = (roundData as any).choices?.[0];
+      const roundContent = (choice?.message?.content as string) || "";
+      const roundReasoning = (choice?.message?.reasoning_content as string) || "";
+      lastFinishReason = (choice?.finish_reason as string) || "stop";
+
+      fullContent += roundContent;
+      fullReasoning += roundReasoning;
+
+      console.log(`[Nvidia Proxy] round=${round} content_chars=${roundContent.length} (total=${fullContent.length}) finish_reason=${lastFinishReason}`);
+
+      if (lastFinishReason !== "length") {
+        // Model finished naturally — no continuation needed.
+        stillTruncated = false;
         break;
       }
 
-      // ─── Success ───────────────────────────────────────────
-      if (nvidiaResponse.ok) {
-        const data = await drainStreamToCompletion(nvidiaResponse, model);
-
-        // Attach retry metadata (useful for client awareness)
-        if (attempt > 1) {
-          data._retryMeta = {
-            attempts: attempt,
-            succeeded: true,
-          };
-        }
-
-        return NextResponse.json(data);
+      // finish_reason === 'length' → output was truncated.
+      // If we have continuation budget left, append the partial output as
+      // an assistant message + the generic continue prompt, and loop again.
+      if (round >= maxContinuations || !roundContent) {
+        stillTruncated = true;
+        console.warn(`[Nvidia Proxy] TRUNCATED after ${round + 1} round(s) — exhausted maxContinuations=${maxContinuations}. Output ends mid-structure.`);
+        break;
       }
 
-      // ─── Non-retryable error — return immediately ──────────
-      const errorText = await nvidiaResponse.text().catch(() => "Unknown error");
-      lastStatus = nvidiaResponse.status;
-      lastError = errorText.slice(0, 500);
+      continuations++;
+      console.log(`[Nvidia Proxy] continue  round=${round + 1}/${maxContinuations} — model hit max_tokens, resuming from char ${fullContent.length}`);
 
-      if (!RETRYABLE_STATUS_CODES.has(nvidiaResponse.status)) {
-        // Client errors (400, 401, 403, 404) — retrying won't help
-        console.error(
-          `[Nvidia Proxy] Non-retryable error (${nvidiaResponse.status}): ${lastError}`
-        );
-        return NextResponse.json(
-          {
-            error: describeStatus(nvidiaResponse.status),
-            details: lastError,
-            retryable: false,
-          },
-          { status: nvidiaResponse.status }
-        );
-      }
-
-      // ─── Retryable error ───────────────────────────────────
-      console.warn(
-        `[Nvidia Proxy] Attempt ${attempt}/${MAX_RETRIES} — ${describeStatus(nvidiaResponse.status)}. ${
-          attempt < MAX_RETRIES
-            ? `Retrying in ${RETRY_DELAY_MS / 1000}s…`
-            : "No more retries."
-        }`
-      );
-
-      if (attempt < MAX_RETRIES) {
-        await sleep(RETRY_DELAY_MS);
-      }
+      // Build the next round's messages: original + assistant's partial + continue prompt.
+      roundMessages = [
+        ...messages,
+        { role: "assistant", content: roundContent },
+        { role: "user", content: CONTINUE_USER_PROMPT },
+      ];
     }
 
-    // ─── All retries exhausted ───────────────────────────────
-    return NextResponse.json(
-      {
-        error: lastStatus
-          ? `${describeStatus(lastStatus)} — all ${MAX_RETRIES} attempts failed`
-          : `Network error — all ${MAX_RETRIES} attempts failed`,
-        details: lastError,
-        retryable: true,
-        attemptsExhausted: true,
+    // Build the final response with accumulated content + continuation metadata.
+    const finalResponse: Record<string, unknown> = {
+      id: `chatcmpl-edge-${Date.now()}`,
+      object: "chat.completion",
+      created: Math.floor(Date.now() / 1000),
+      model,
+      choices: [
+        {
+          index: 0,
+          message: {
+            role: "assistant",
+            content: fullContent,
+            reasoning_content: fullReasoning || null,
+          },
+          finish_reason: stillTruncated ? "length" : "stop",
+        },
+      ],
+      usage: null,
+      // Continuation metadata — lets the client know whether the output
+      // was assembled from multiple calls and whether it's still truncated.
+      _continuationMeta: {
+        continuations,
+        truncated: stillTruncated,
+        total_chars: fullContent.length,
       },
-      { status: lastStatus || 502 }
-    );
+    };
+
+    if (retryMeta) {
+      finalResponse._retryMeta = retryMeta;
+    }
+
+    return NextResponse.json(finalResponse);
   } catch (error) {
     console.error("[Nvidia Proxy] Internal error:", error);
     return NextResponse.json(
