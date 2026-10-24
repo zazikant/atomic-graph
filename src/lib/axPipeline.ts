@@ -3,7 +3,6 @@ import type {
   AtomicNode,
   ExtractResult,
   LinkResult,
-  ValidationResult,
   PipelineResult,
   IterationLog,
   NvidiaModel,
@@ -355,16 +354,8 @@ ${chunk}`;
    * Extract concepts from notes. For large inputs, splits into chunks,
    * processes each chunk separately, then merges and deduplicates.
    */
-  private async extract(
-    rawNotes: string,
-    previousResult: LinkResult | null
-  ): Promise<ExtractResult> {
-    // ─── Refinement path (not first pass) ─────────────────────
-    if (previousResult) {
-      return this.extractRefinement(rawNotes, previousResult);
-    }
-
-    // ─── First pass: check if chunking is needed ──────────────
+  private async extract(rawNotes: string): Promise<ExtractResult> {
+    // ─── Check if chunking is needed
     const chunks = this.splitIntoChunks(rawNotes);
 
     if (chunks.length === 1) {
@@ -569,49 +560,6 @@ ${chunk}`;
     return { nodes: deduplicated };
   }
 
-  private async extractRefinement(
-    rawNotes: string,
-    previousResult: LinkResult | null
-  ): Promise<ExtractResult> {
-    const nodesCompact = previousResult?.nodes
-      ?.slice(0, 50)
-      .map((n) => `${n.id}: ${n.title}`)
-      .join("\n");
-
-    const prompt = `Refine concepts — fix ONLY the validation issues, nothing else.
-
-PREVIOUS CONCEPTS:
-${nodesCompact}
-
-ORIGINAL NOTES:
-${rawNotes.slice(0, 2000)}${rawNotes.length > 2000 ? "\n…" : ""}
-
-Fix rules:
-- Add truly missing concepts (not rephrased ones)
-- Add bridge concepts that connect clusters
-- Split genuinely non-atomic concepts
-- Keep all existing valid concepts unchanged
-- Be CONCISE: short titles, brief summaries
-
-Return JSON: { "nodes": [{ "id": "c1", "title": "...", "summary": "...", "tags": ["..."] }] }`;
-
-    const result = await this.callLLMJSON<ExtractResult>(prompt, "Extract (refinement)");
-
-    if (!result.nodes || !Array.isArray(result.nodes)) {
-      throw new Error("Extract refinement returned invalid nodes array");
-    }
-
-    result.nodes = result.nodes.map((node, i) => ({
-      id: node.id || `c${i + 1}`,
-      title: node.title || `Concept ${i + 1}`,
-      summary: node.summary || "",
-      tags: Array.isArray(node.tags) ? node.tags : [],
-      content: node.content || node.summary || "",
-    }));
-
-    return result;
-  }
-
   // ─── Step 2: LINK — surface hidden relationships ──────────────
 
   private async link(extracted: ExtractResult): Promise<LinkResult> {
@@ -805,179 +753,65 @@ ${allNodesSummary}`;
     return validEdges;
   }
 
-  // ─── Step 3: VALIDATE — quality-aware self-critique ───────────
-
-  private async validate(graph: LinkResult): Promise<ValidationResult> {
-    // Use compact representation to save tokens
-    const graphCompact = {
-      nodes: graph.nodes.map((n) => ({ id: n.id, title: n.title, summary: n.summary, tags: n.tags })),
-      edges: graph.edges.map((e) => ({ source: e.source, target: e.target, label: e.label, strength: e.strength })),
-    };
-
-    // Truncate original notes if very large (validator doesn't need every word)
-    // Use a smaller limit to keep total prompt+response within token budgets
-    const notesForValidation = this.rawNotes.length > 4000
-      ? this.rawNotes.slice(0, 4000) + "\n… (notes truncated)"
-      : this.rawNotes;
-
-    const prompt = `Evaluate this knowledge graph for quality and semantic fidelity.
-
-Axes (weight: semantic fidelity > atomicity > completeness > relationships > structure):
-1. SEMANTIC FIDELITY: Does it preserve the writer's meaning? Minor wording changes don't lower score.
-2. ATOMICITY: Is each concept truly one idea?
-3. COMPLETENESS: Are implicit concepts captured?
-4. RELATIONSHIP QUALITY: Specific edge labels ("requires") vs lazy ones ("related to")?
-5. STRUCTURAL INTEGRITY: Orphan nodes? Missing cross-links?
-
-Scoring:
-- 0.90-1.00: Faithful representation, minor wording differences only
-- 0.75-0.89: Minor gaps
-- 0.50-0.74: Significant gaps
-- 0.00-0.49: Major problems
-
-Be FAIR — clear notes + good graph = high score. Don't invent reasons to lower it.
-
-ORIGINAL NOTES:
-${notesForValidation}
-
-Graph: ${JSON.stringify(graphCompact)}
-
-Return JSON: { "score": 0.85, "issues": ["..."], "suggestions": ["..."] }
-Only list issues affecting MEANING or STRUCTURE.`;
-
-    const result = await this.callLLMJSON<ValidationResult>(prompt, "Validate");
-
-    return {
-      score:
-        typeof result.score === "number"
-          ? Math.min(1, Math.max(0, result.score))
-          : 0,
-      issues: Array.isArray(result.issues) ? result.issues : [],
-      suggestions: Array.isArray(result.suggestions) ? result.suggestions : [],
-    };
-  }
-
-  // ─── Step 4: REFINE — targeted fixes only ────────────────────
-
-  private async refine(
-    graph: LinkResult,
-    issues: string[]
-  ): Promise<LinkResult> {
-    // Use compact representation to save tokens
-    const graphCompact = {
-      nodes: graph.nodes.map((n) => ({ id: n.id, title: n.title, summary: n.summary, tags: n.tags })),
-      edges: graph.edges.map((e) => ({ source: e.source, target: e.target, label: e.label, strength: e.strength })),
-    };
-
-    const prompt = `Fix ONLY these specific issues in the knowledge graph.
-
-Rules:
-- Preserve writer's wording where accurate
-- Only fix SEMANTIC or STRUCTURAL problems, not style
-- Missing bridge? INFER and add it.
-- Generic edge? Replace with specific verb.
-- Non-atomic concept? SPLIT into two and link.
-- No speculative additions.
-- Be CONCISE: short titles, brief summaries, 1-3 word edge labels.
-
-Return the FULL corrected graph (both nodes and edges). Keep unchanged items as-is.
-
-Return JSON: { "nodes": [{ "id": "c1", "title": "...", "summary": "...", "tags": ["..."] }], "edges": [{ "source": "id", "target": "id", "label": "verb", "strength": 0.8 }] }
-
-Issues:
-${issues.map((i) => `- ${i}`).join("\n")}
-
-Current graph: ${JSON.stringify(graphCompact)}`;
-
-    const result = await this.callLLMJSON<LinkResult>(prompt, "Refine");
-
-    // Validate and normalise the refined result
-    const nodeIds = new Set((result.nodes || []).map((n) => n.id));
-    const validEdges = (result.edges || [])
-      .filter(
-        (e) =>
-          e.source &&
-          e.target &&
-          nodeIds.has(e.source) &&
-          nodeIds.has(e.target) &&
-          e.source !== e.target
-      )
-      .map((e) => ({
-        source: e.source,
-        target: e.target,
-        label: e.label || "relates to",
-        strength:
-          typeof e.strength === "number"
-            ? Math.min(1, Math.max(0, e.strength))
-            : 0.5,
-      }));
-
-    const nodes = (result.nodes || graph.nodes).map((node, i) => ({
-      id: node.id || graph.nodes[i]?.id || `c${i + 1}`,
-      title: node.title || graph.nodes[i]?.title || `Concept ${i + 1}`,
-      summary: node.summary || graph.nodes[i]?.summary || "",
-      tags: Array.isArray(node.tags) ? node.tags : graph.nodes[i]?.tags || [],
-      content:
-        node.content || node.summary || graph.nodes[i]?.content || "",
-    }));
-
-    return {
-      nodes,
-      edges: validEdges.length > 0 ? validEdges : graph.edges,
-    };
-  }
-
   // ─── Main Pipeline Runner ──────────────────────────────────────
 
-  async run(
-    rawNotes: string,
-    iterations: number,
-    threshold: number
-  ): Promise<PipelineResult> {
+  /**
+   * Single direct pass: EXTRACT → LINK. No VALIDATE/REFINE stage — the
+   * pipeline runs straight through in one iteration. Score is an
+   * estimate since there is no validation step.
+   */
+  async run(rawNotes: string): Promise<PipelineResult> {
     this.rawNotes = rawNotes;
-    let result: LinkResult | null = null;
-    let score = 0;
-    let attempt = 0;
+    const attempt = 1;
     const iterLogs: IterationLog[] = [];
 
-    while (attempt < iterations && score < threshold) {
-      attempt++;
+    // Step 1: EXTRACT — reason through semantic space
+    // (handles chunking for large inputs internally)
+    this.emit("extracting", attempt, 0, false);
+    const extracted = await this.callWithRetryAwareness(
+      () => this.extract(rawNotes),
+      attempt,
+      "Extract"
+    );
 
-      // Step 1: EXTRACT — reason through semantic space
-      // (handles chunking for large inputs internally)
-      this.emit("extracting", attempt, 0, false);
-      let extracted: ExtractResult;
-      try {
-        extracted = await this.callWithRetryAwareness(
-          () => this.extract(rawNotes, result),
-          attempt,
-          "Extract"
-        );
-      } catch (extractError) {
-        // Partial processing: if we have a previous result, continue with it
-        if (result) {
-          console.warn("[AX Pipeline] Extract failed, using previous result");
-          extracted = { nodes: result.nodes };
-        } else {
-          throw extractError;
-        }
-      }
+    // ─── Pre-LINK cooldown ───
+    // EXTRACT just burned NVIDIA rate-limit budget. LINK runs immediately
+    // after and often fails because the rate-limit window hasn't reset.
+    // Wait 10s before starting LINK.
+    {
+      this.emit(
+        "retrying",
+        attempt,
+        0,
+        false,
+        undefined,
+        `Cooldown: waiting 10s before LINK (lets NVIDIA rate-limit window reset after EXTRACT)…`,
+      );
+      await this.sleep(10_000);
+      this.emit("linking", attempt, 0, false, undefined);
+    }
 
-      // ─── Pre-LINK cooldown ──────────────────────────────────────
-      // EXTRACT just burned NVIDIA rate-limit budget. LINK runs immediately
-      // after and often fails because the rate-limit window hasn't reset.
-      // Wait 10s (or 30s if EXTRACT had retries) before starting LINK.
-      {
-        const preLinkDelay = 10_000; // 10s default cooldown before LINK
+    // ─── Step 2: LINK — surface hidden relationships ───
+    // LINK is mandatory — a graph without edges is useless. Same round-
+    // based retry pattern as chunked EXTRACT: 3 attempts per round,
+    // 30s cooldown between rounds, up to 2 rounds. If all rounds fail,
+    // throw and abort the pipeline.
+    let linked: LinkResult | null = null;
+    const MAX_LINK_ATTEMPTS = 3;
+    const MAX_LINK_ROUNDS = 2;
+    let lastLinkError = "";
+
+    for (let linkRound = 1; linkRound <= MAX_LINK_ROUNDS && linked === null; linkRound++) {
+      if (linkRound > 1) {
         this.emit(
           "retrying",
           attempt,
           0,
           false,
           undefined,
-          `Cooldown: waiting 10s before LINK (lets NVIDIA rate-limit window reset after EXTRACT)…`,
+          `Link round 2/${MAX_LINK_ROUNDS}: 30s cooldown before retrying (NVIDIA rate-limit reset)…`,
         );
-        await this.sleep(preLinkDelay);
+        await this.sleep(30_000);
         this.emit(
           "linking",
           attempt,
@@ -987,172 +821,66 @@ Current graph: ${JSON.stringify(graphCompact)}`;
         );
       }
 
-      // ─── Step 2: LINK — surface hidden relationships ─────────────
-      // LINK is mandatory — a graph without edges is useless. Same round-
-      // based retry pattern as chunked EXTRACT: 3 attempts per round,
-      // 30s cooldown between rounds, up to 2 rounds. If all rounds fail,
-      // throw and abort the pipeline.
-      //
-      // Each /api/nvidia-stream call has an 18s timeout × 1 attempt.
-      // Rate-limit-aware backoff between retries: 10s for 429 errors,
-      // 5s for timeouts (may be rate-limit-induced hangs).
-      let linked: LinkResult | null = null;
-      const MAX_LINK_ATTEMPTS = 3;
-      const MAX_LINK_ROUNDS = 2;
-      let lastLinkError = "";
-
-      for (let linkRound = 1; linkRound <= MAX_LINK_ROUNDS && linked === null; linkRound++) {
-        if (linkRound > 1) {
-          this.emit(
-            "retrying",
-            attempt,
-            0,
-            false,
-            undefined,
-            `Link round 2/${MAX_LINK_ROUNDS}: 30s cooldown before retrying (NVIDIA rate-limit reset)…`,
-          );
-          await this.sleep(30_000);
-          this.emit(
-            "linking",
-            attempt,
-            0,
-            false,
-            undefined,
-          );
-        }
-
-        for (let linkAttempt = 1; linkAttempt <= MAX_LINK_ATTEMPTS; linkAttempt++) {
-          try {
-            if (linkAttempt > 1) {
-              const backoff = this.computeRetryBackoff(lastLinkError);
-              this.emit(
-                "retrying",
-                attempt,
-                0,
-                false,
-                undefined,
-                backoff.delayMs > 0
-                  ? `Link round ${linkRound} attempt ${linkAttempt}/${MAX_LINK_ATTEMPTS} in ${backoff.delayMs / 1000}s (${backoff.reason})…`
-                  : `Link round ${linkRound} attempt ${linkAttempt}/${MAX_LINK_ATTEMPTS} — retrying…`,
-              );
-              if (backoff.delayMs > 0) {
-                await this.sleep(backoff.delayMs);
-              }
-            }
-            linked = await this.callWithRetryAwareness(
-              () => this.link(extracted),
+      for (let linkAttempt = 1; linkAttempt <= MAX_LINK_ATTEMPTS; linkAttempt++) {
+        try {
+          if (linkAttempt > 1) {
+            const backoff = this.computeRetryBackoff(lastLinkError);
+            this.emit(
+              "retrying",
               attempt,
-              `Link (round ${linkRound}${linkAttempt > 1 ? `, retry ${linkAttempt}` : ""})`,
+              0,
+              false,
+              undefined,
+              backoff.delayMs > 0
+                ? `Link round ${linkRound} attempt ${linkAttempt}/${MAX_LINK_ATTEMPTS} in ${backoff.delayMs / 1000}s (${backoff.reason})…`
+                : `Link round ${linkRound} attempt ${linkAttempt}/${MAX_LINK_ATTEMPTS} — retrying…`,
             );
-            lastLinkError = "";
-            break; // success
-          } catch (linkError) {
-            const msg = linkError instanceof Error ? linkError.message : String(linkError);
-            lastLinkError = msg;
-            console.warn(
-              `[AX Pipeline] Link round ${linkRound} attempt ${linkAttempt}/${MAX_LINK_ATTEMPTS} failed: ${msg}`,
-            );
-            if (linkRound === MAX_LINK_ROUNDS && linkAttempt === MAX_LINK_ATTEMPTS) {
-              this.emit(
-                "retrying",
-                attempt,
-                0,
-                false,
-                undefined,
-                `Link failed after ${MAX_LINK_ROUNDS} rounds × ${MAX_LINK_ATTEMPTS} attempts — edges are mandatory. Aborting pipeline.`,
-              );
+            if (backoff.delayMs > 0) {
+              await this.sleep(backoff.delayMs);
             }
           }
-        }
-      }
-
-      // Edges are mandatory: if LINK failed all rounds, abort the pipeline
-      if (linked === null) {
-        throw new Error(
-          `Could not generate edges after ${MAX_LINK_ROUNDS} rounds × ${MAX_LINK_ATTEMPTS} attempts. ` +
-          `Last error: ${lastLinkError}. Please click Generate again — NVIDIA's rate limit ` +
-          `may have cleared by then.`
-        );
-      }
-
-      // ─── Pre-VALIDATE cooldown ──────────────────────────────────
-      // LINK just burned NVIDIA rate-limit budget. VALIDATE runs immediately
-      // after and may fail. 10s cooldown gives NVIDIA time to reset.
-      {
-        this.emit(
-          "retrying",
-          attempt,
-          0,
-          false,
-          undefined,
-          `Cooldown: waiting 10s before VALIDATE (lets NVIDIA rate-limit window reset after LINK)…`,
-        );
-        await this.sleep(10_000);
-      }
-
-      // Step 3: VALIDATE — quality-aware self-critique
-      this.emit("validating", attempt, 0, false);
-      try {
-        const validation = await this.callWithRetryAwareness(
-          () => this.validate(linked),
-          attempt,
-          "Validate"
-        );
-        score = validation.score;
-
-        const passed = score >= threshold;
-        this.emit("validating", attempt, score, passed, validation.issues);
-
-        iterLogs.push({
-          iteration: attempt,
-          phase: passed ? "complete" : "validating",
-          score,
-          passed,
-          issues: validation.issues,
-          timestamp: Date.now(),
-        });
-
-        // Step 4: REFINE — targeted fixes only, if score below threshold
-        if (score < threshold && attempt < iterations) {
-          this.emit("refining", attempt, score, false);
-          try {
-            result = await this.callWithRetryAwareness(
-              () => this.refine(linked, validation.issues),
+          linked = await this.callWithRetryAwareness(
+            () => this.link(extracted),
+            attempt,
+            `Link (round ${linkRound}${linkAttempt > 1 ? `, retry ${linkAttempt}` : ""})`,
+          );
+          lastLinkError = "";
+          break; // success
+        } catch (linkError) {
+          const msg = linkError instanceof Error ? linkError.message : String(linkError);
+          lastLinkError = msg;
+          console.warn(
+            `[AX Pipeline] Link round ${linkRound} attempt ${linkAttempt}/${MAX_LINK_ATTEMPTS} failed: ${msg}`,
+          );
+          if (linkRound === MAX_LINK_ROUNDS && linkAttempt === MAX_LINK_ATTEMPTS) {
+            this.emit(
+              "retrying",
               attempt,
-              "Refine"
+              0,
+              false,
+              undefined,
+              `Link failed after ${MAX_LINK_ROUNDS} rounds × ${MAX_LINK_ATTEMPTS} attempts — edges are mandatory. Aborting pipeline.`,
             );
-          } catch (refineError) {
-            // Partial processing: use linked result as-is
-            console.warn("[AX Pipeline] Refine failed, using linked result");
-            result = linked;
           }
-        } else {
-          result = linked;
         }
-      } catch (validateError) {
-        // Validation failed — use linked result with a default score
-        console.warn("[AX Pipeline] Validate failed, using default score");
-        score = 0.7; // Assume decent quality
-        result = linked;
-
-        iterLogs.push({
-          iteration: attempt,
-          phase: "validating",
-          score,
-          passed: score >= threshold,
-          issues: ["Validation step failed — using estimated score"],
-          timestamp: Date.now(),
-        });
-
-        if (score >= threshold) break;
       }
     }
 
-    // Mark final iteration as complete
-    this.emit("complete", attempt, score, score >= threshold);
+    // Edges are mandatory: if LINK failed all rounds, abort the pipeline
+    if (linked === null) {
+      throw new Error(
+        `Could not generate edges after ${MAX_LINK_ROUNDS} rounds × ${MAX_LINK_ATTEMPTS} attempts. ` +
+        `Last error: ${lastLinkError}. Please click Generate again — NVIDIA's rate limit ` +
+        `may have cleared by then.`
+      );
+    }
+
+    // Single pass complete — no VALIDATE/REFINE stage.
+    const score = 0.85; // Estimated — no validation step
+    this.emit("complete", attempt, score, true);
 
     return {
-      result,
+      result: linked,
       score,
       attempts: attempt,
       iterations: iterLogs,

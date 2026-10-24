@@ -260,7 +260,7 @@ export function PipelineStatus() {
                 ? "Minor gaps only. Core meaning captured accurately."
                 : pipelineScore >= 0.50
                 ? "Some concepts or relationships may be missing or imprecise."
-                : "Significant gaps. Consider refining your notes or increasing iterations."}
+                : "Significant gaps. Consider refining your notes and generating again."}
             </p>
           </div>
         )}

@@ -270,8 +270,8 @@ function GraphCanvas() {
     try {
       const data = {
         nodes: flowNodes.map((n) => ({
-          id: n.id,
           ...n.data.node,
+          id: n.id,
         })),
         edges: flowEdges.map((e) => ({
           source: e.source,
@@ -329,7 +329,7 @@ function GraphCanvas() {
       // Fallback: try compact format without pretty-printing
       try {
         const data = {
-          nodes: flowNodes.map((n) => ({ id: n.id, ...n.data.node })),
+          nodes: flowNodes.map((n) => ({ ...n.data.node, id: n.id })),
           edges: flowEdges.map((e) => ({
             source: e.source,
             target: e.target,

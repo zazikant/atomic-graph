@@ -63,11 +63,7 @@ export function NotesInput({ onGraphGenerated }: NotesInputProps) {
         },
       );
 
-      const result = await pipeline.run(
-        rawNotes,
-        config.iterations,
-        config.confidenceThreshold
-      );
+      const result = await pipeline.run(rawNotes);
 
       if (result.result) {
         const { nodes, edges } = buildFlowGraph(

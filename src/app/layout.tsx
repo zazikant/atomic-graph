@@ -16,7 +16,7 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "Atomic Graph — Knowledge Graph Generator",
   description:
-    "Transform raw notes into an interactive knowledge graph. AI reasons through the semantic space of your ideas using a DSPy-style AX pipeline with self-validating refinement loops.",
+    "Transform raw notes into an interactive knowledge graph. AI reasons through the semantic space of your ideas using a DSPy-style AX pipeline in a single direct pass (— no validation stage).",
   keywords: [
     "knowledge graph",
     "atomic notes",

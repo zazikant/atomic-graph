@@ -83,7 +83,7 @@ export const CLUSTER_COLORS: string[] = [
 
 // ─── React Flow Custom Data ──────────────────────────────────
 
-export interface NodeCardData {
+export interface NodeCardData extends Record<string, unknown> {
   node: AtomicNode;
   color: string;
   isSelected: boolean;

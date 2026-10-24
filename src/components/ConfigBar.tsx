@@ -4,9 +4,8 @@ import { useState } from "react";
 import { useGraphStore } from "@/store/graphStore";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Slider } from "@/components/ui/slider";
 import { Badge } from "@/components/ui/badge";
-import { Settings, Key, Cpu, RotateCcw, Target, ChevronDown, ChevronUp } from "lucide-react";
+import { Settings, Key, Cpu, ChevronDown, ChevronUp } from "lucide-react";
 
 export function ConfigBar() {
   const { config, setConfig } = useGraphStore();
@@ -77,43 +76,6 @@ export function ConfigBar() {
           </Badge>
         </div>
 
-        {/* Iterations Slider */}
-        <div className="flex items-center gap-1.5">
-          <RotateCcw className="w-3.5 h-3.5 text-[#8888cc] shrink-0" />
-          <Label className="text-[#aaaadd] text-[11px] font-mono whitespace-nowrap">
-            Iter: {config.iterations}
-          </Label>
-          <Slider
-            min={1}
-            max={5}
-            step={1}
-            value={[config.iterations]}
-            onValueChange={([val]) => setConfig({ iterations: val })}
-            className="w-[70px]"
-          />
-        </div>
-
-        {/* Confidence Threshold */}
-        <div className="flex items-center gap-1.5">
-          <Target className="w-3.5 h-3.5 text-[#8888cc] shrink-0" />
-          <Label className="text-[#aaaadd] text-[11px] font-mono whitespace-nowrap">
-            Threshold: {config.confidenceThreshold.toFixed(2)}
-          </Label>
-          <Input
-            type="number"
-            min={0}
-            max={1}
-            step={0.05}
-            value={config.confidenceThreshold}
-            onChange={(e) => {
-              const val = parseFloat(e.target.value);
-              if (!isNaN(val) && val >= 0 && val <= 1) {
-                setConfig({ confidenceThreshold: val });
-              }
-            }}
-            className="h-7 w-[60px] bg-[#1a1a3e] border-[#3a3a6a] text-[#e0e0ff] text-[11px] font-mono"
-          />
-        </div>
       </div>
     </div>
   );

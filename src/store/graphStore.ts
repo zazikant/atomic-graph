@@ -75,14 +75,10 @@ interface GraphStore {
 
 // ─── Persist API key to localStorage ────────────────────────
 
-// Defaults: 1 iteration, threshold 0.3.
-// - 1 iteration = EXTRACT → LINK → VALIDATE only (no REFINE loop).
-//   Chosen because gpt-oss-120b typically produces good-enough graphs in
-//   one pass; refining burns 2 extra NVIDIA calls (which are flaky from
-//   Vercel) for marginal quality gain.
-// - 0.3 threshold = accept almost any score. Since we only do 1 iteration,
-//   we don't want to reject the graph and force a refine that won't happen.
-//   Users can bump these up in the ConfigBar for higher-quality runs.
+// Note: iterations/confidenceThreshold are legacy config fields. The
+// pipeline now runs a single direct pass (EXTRACT → LINK) with no
+// VALIDATE/REFINE stage, so these values are unused. Kept in the store
+// and localStorage schema for backwards compatibility.
 const DEFAULT_ITERATIONS = 1;
 const DEFAULT_THRESHOLD = 0.3;
 

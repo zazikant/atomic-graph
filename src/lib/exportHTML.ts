@@ -53,7 +53,7 @@ export function generateHTMLExport(
     id: e.id,
     source: e.source,
     target: e.target,
-    label: e.label || e.data?.label,
+    label: (e.label || (e.data as any)?.label) as string | undefined,
     style: e.style as { stroke?: string; strokeWidth?: number },
     animated: e.animated,
     data: {
