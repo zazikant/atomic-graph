@@ -209,7 +209,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const effectiveMaxTokens = max_tokens ?? 32768;
+    const effectiveMaxTokens = Math.min(max_tokens ?? 4096, 4096); // MODEL_MAX_TOKENS_CAP — gpt-oss-20b hard limit (ax-translator pattern)
     const maxContinuations = DEFAULT_MAX_CONTINUATIONS;
 
     // ─── Auto-continue loop ──────────────────────────────────
@@ -230,6 +230,7 @@ export async function POST(request: NextRequest) {
         messages: roundMessages,
         temperature: temperature ?? 0.7,
         max_tokens: effectiveMaxTokens,
+        reasoning_effort: "low", // ax-translator DEFAULT_REASONING_EFFORT — fast TTFB
         stream: true, // Streaming required — gpt-oss hangs on Vercel with stream:false
       });
 

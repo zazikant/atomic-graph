@@ -25,16 +25,41 @@ const CHUNK_THRESHOLD = 8000;
 
 // ─── System Prompt ─────────────────────────────────────────────
 
-const SYSTEM_PROMPT = `You are a semantic reasoning engine that builds knowledge graphs from raw thinking.
+// ─── System Prompt (ax-translator meta prompt, graph domain) ──────────────
+// Exact ax-translator meta prompt structure (TRANSLATE_SYSTEM_PROMPT family):
+// semantic reasoning engine identity → what we do NOT do → what we surface /
+// infer → faithful-meaning quality bar → CRITICAL OUTPUT RULES.
+
+const SYSTEM_PROMPT = `You are a semantic reasoning engine specialized in transforming raw notes into atomic knowledge graphs.
 You do NOT merely reformat or summarise — you REASON through the semantic space of ideas.
 You surface implicit structure the writer already knows but didn't articulate.
-You infer missing concepts, bridge gaps, and make hidden relationships explicit.
+You infer missing concepts, bridge gaps, and make hidden logical relationships explicit.
+You follow the extraction instructions embedded in the notes faithfully.
 QUALITY MATTERS: you preserve the writer's original meaning faithfully.
 You do NOT over-process, hallucinate, or add unnecessary complexity.
 When the original notes are already clear and complete, you recognise that and score high.
 
 CRITICAL OUTPUT RULES:
-- Always respond with valid JSON only. No markdown, no explanation, no code fences.
+- Output ONLY the JSON object. No markdown fences, no explanation, no meta-commentary.
+- Every response must be a single valid JSON object parseable by JSON.parse().
+- Preserve the writer's original meaning faithfully.
+- Be CONCISE in summaries: 1-2 short sentences max per node.
+- Keep titles short: 2-5 words.
+- Use minimal tags: 1-3 per node.
+- Do NOT repeat the input text verbatim in summaries — distill the core idea.
+- Avoid overly verbose edge labels — use 1-3 word specific verbs.`;
+
+// ─── Retry System Prompt (ax-translator retry meta prompt, graph domain) ──
+// Exact ax-translator RETRY meta prompt structure (TRANSLATE_RETRY_SYSTEM_PROMPT):
+// same identity + "previous attempt did not … properly" → CRITICAL must-do →
+// tightened CRITICAL OUTPUT RULES. Used for every retry attempt.
+
+const RETRY_SYSTEM_PROMPT = `You are a semantic reasoning engine specialized in building knowledge graphs from raw notes. The previous attempt did not extract the graph properly.
+
+CRITICAL: You MUST produce the complete JSON graph — do NOT echo the input notes unchanged.
+
+CRITICAL OUTPUT RULES:
+- Output ONLY the JSON object. No markdown fences, no explanation, no meta-commentary.
 - Every response must be a single valid JSON object parseable by JSON.parse().
 - Be CONCISE in summaries: 1-2 short sentences max per node.
 - Keep titles short: 2-5 words.
@@ -97,17 +122,21 @@ export class AXPipeline {
   private async callLLMJSON<T>(
     prompt: string,
     phaseLabel: string,
+    isRetry: boolean = false,
   ): Promise<T> {
+    // ax-translator pattern: retries get the forceful RETRY meta prompt —
+    // initial calls keep the base SYSTEM_PROMPT.
+    const systemPrompt = isRetry ? RETRY_SYSTEM_PROMPT : SYSTEM_PROMPT;
     if (this.useStreaming) {
       return await this.client.chatJSONStream<T>(
         prompt,
-        SYSTEM_PROMPT,
+        systemPrompt,
         this.streamCallbacks.onLog,
         this.streamCallbacks.onChunk,
         phaseLabel,
       );
     }
-    return await this.client.chatJSON<T>(prompt, SYSTEM_PROMPT);
+    return await this.client.chatJSON<T>(prompt, systemPrompt);
   }
 
   private emit(
@@ -311,7 +340,8 @@ export class AXPipeline {
   private async extractChunk(
     chunk: string,
     chunkIndex: number,
-    totalChunks: number
+    totalChunks: number,
+    isRetry: boolean = false
   ): Promise<ExtractResult> {
     const contextHint =
       totalChunks > 1
@@ -333,7 +363,7 @@ Return JSON: { "nodes": [{ "id": "c1", "title": "...", "summary": "...", "tags":
 Raw notes:${contextHint}
 ${chunk}`;
 
-    const result = await this.callLLMJSON<ExtractResult>(prompt, `Extract (section ${chunkIndex + 1}/${totalChunks})`);
+    const result = await this.callLLMJSON<ExtractResult>(prompt, `Extract (section ${chunkIndex + 1}/${totalChunks})`, isRetry);
 
     if (!result.nodes || !Array.isArray(result.nodes)) {
       throw new Error("Extract step returned invalid nodes array");
@@ -359,8 +389,80 @@ ${chunk}`;
     const chunks = this.splitIntoChunks(rawNotes);
 
     if (chunks.length === 1) {
-      // Small input — process directly
-      return this.extractChunk(rawNotes, 0, 1);
+      // Small input — run through the SAME retry loop as chunked extraction
+      // (3 attempts × 2 rounds with backoffs + 30s round cooldown). A single
+      // flaky NVIDIA call must not abort the whole pipeline.
+      const MAX_ATTEMPTS = 3;
+      const MAX_ROUNDS = 2;
+      let result: ExtractResult | null = null;
+      let lastError = "";
+
+      for (let round = 1; round <= MAX_ROUNDS && result === null; round++) {
+        if (round > 1) {
+          this.emit(
+            "retrying",
+            1,
+            0,
+            false,
+            undefined,
+            `Round 2/${MAX_ROUNDS}: 30s cooldown before retrying (NVIDIA rate-limit reset)…`,
+          );
+          await this.sleep(30_000);
+          this.emit("extracting", 1, 0, false, undefined, "Round 2 — retrying after cooldown…");
+        }
+
+        for (let attemptN = 1; attemptN <= MAX_ATTEMPTS; attemptN++) {
+          try {
+            if (attemptN > 1) {
+              const backoff = this.computeRetryBackoff(lastError);
+              this.emit(
+                "retrying",
+                1,
+                0,
+                false,
+                undefined,
+                backoff.delayMs > 0
+                  ? `Round ${round} attempt ${attemptN}/${MAX_ATTEMPTS} in ${backoff.delayMs / 1000}s (${backoff.reason})…`
+                  : `Round ${round} attempt ${attemptN}/${MAX_ATTEMPTS} — retrying…`,
+              );
+              if (backoff.delayMs > 0) {
+                await this.sleep(backoff.delayMs);
+              }
+            }
+            result = await this.callWithRetryAwareness(
+              () => this.extractChunk(rawNotes, 0, 1, round > 1 || attemptN > 1),
+              1,
+              `Extract (round ${round}${attemptN > 1 ? `, retry ${attemptN}` : ""})`,
+            );
+            break; // success
+          } catch (error) {
+            const msg = error instanceof Error ? error.message : String(error);
+            lastError = msg;
+            console.warn(
+              `[AX Pipeline] Extract round ${round} attempt ${attemptN}/${MAX_ATTEMPTS} failed: ${msg}`,
+            );
+            if (round === MAX_ROUNDS && attemptN === MAX_ATTEMPTS) {
+              this.emit(
+                "retrying",
+                1,
+                0,
+                false,
+                undefined,
+                `Extract failed after ${MAX_ROUNDS} rounds × ${MAX_ATTEMPTS} attempts.`,
+              );
+            }
+          }
+        }
+      }
+
+      if (!result) {
+        throw new Error(
+          `Extraction failed after ${MAX_ROUNDS} rounds × ${MAX_ATTEMPTS} attempts. ` +
+          `Last error: ${lastError}. Please click Generate again — NVIDIA's rate limit ` +
+          `may have cleared by then.`
+        );
+      }
+      return result;
     }
 
     // ─── Large input: chunked extraction ──────────────────────
@@ -460,7 +562,7 @@ ${chunk}`;
               }
             }
             chunkResult = await this.callWithRetryAwareness(
-              () => this.extractChunk(chunks[i], i, chunks.length),
+              () => this.extractChunk(chunks[i], i, chunks.length, chunkAttempt > 1 || round > 1),
               1,
               `Extract (section ${i + 1}/${chunks.length}, round ${round}${chunkAttempt > 1 ? `, retry ${chunkAttempt}` : ""})`,
             );
@@ -562,7 +664,7 @@ ${chunk}`;
 
   // ─── Step 2: LINK — surface hidden relationships ──────────────
 
-  private async link(extracted: ExtractResult): Promise<LinkResult> {
+  private async link(extracted: ExtractResult, isRetry: boolean = false): Promise<LinkResult> {
     // ─── Batched LINK to handle large node counts ──────────────
     // With 50+ nodes, a single LINK call takes 20-30s and often hits
     // our 28s timeout. With 30 nodes, it completes in ~9s.
@@ -595,7 +697,7 @@ ${chunk}`;
     // For single batch (≤30 nodes), use the original simple prompt
     if (batches.length === 1) {
       const allNodeIds = new Set(allNodes.map((n) => n.id));
-      const edges = await this.linkSingleBatch(allNodes, allNodesSummary, allNodeIds);
+      const edges = await this.linkSingleBatch(allNodes, allNodesSummary, allNodeIds, undefined, undefined, isRetry);
       return { nodes: allNodes, edges };
     }
 
@@ -621,7 +723,7 @@ ${chunk}`;
         `LINK batch ${b + 1}/${batches.length} (${batches[b].length} nodes)…`,
       );
 
-      const batchEdges = await this.linkSingleBatch(batches[b], allNodesSummary, allNodeIds, b + 1, batches.length);
+      const batchEdges = await this.linkSingleBatch(batches[b], allNodesSummary, allNodeIds, b + 1, batches.length, isRetry);
       allEdges.push(...batchEdges);
     }
 
@@ -665,6 +767,7 @@ ${chunk}`;
     allNodeIds: Set<string>,
     batchNumber?: number,
     totalBatches?: number,
+    isRetry: boolean = false,
   ): Promise<GraphEdge[]> {
     const batchNodeSummary = batchNodes
       .map((n) => `${n.id}: ${n.title}`)
@@ -728,6 +831,7 @@ ${allNodesSummary}`;
     const result = await this.callLLMJSON<LinkResult>(
       prompt,
       isMultiBatch ? `Link (batch ${batchNumber}/${totalBatches})` : "Link",
+      isRetry,
     );
 
     // Validate edges reference existing nodes (from the FULL set, not just batch)
@@ -840,7 +944,7 @@ ${allNodesSummary}`;
             }
           }
           linked = await this.callWithRetryAwareness(
-            () => this.link(extracted),
+            () => this.link(extracted, linkRound > 1 || linkAttempt > 1),
             attempt,
             `Link (round ${linkRound}${linkAttempt > 1 ? `, retry ${linkAttempt}` : ""})`,
           );

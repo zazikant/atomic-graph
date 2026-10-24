@@ -51,6 +51,18 @@ const NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1";
 // ceiling there. On Pro (300s Edge cap) this gives the model comfortable room.
 const CALL_TIMEOUT_MS = 120_000;
 const MAX_ATTEMPTS = 1;
+
+// gpt-oss-20b has a hard 4096-token output limit per call (ax-translator
+// MODEL_MAX_TOKENS_CAP). Values above this are silently clamped or rejected
+// by the API — and oversized budgets invite marathon reasoning. We cap here;
+// the auto-continue loop below chains additional calls for longer outputs.
+const MODEL_MAX_TOKENS_CAP = 4096;
+
+// ax-translator DEFAULT_REASONING_EFFORT: 'low' keeps TTFB fast (~4-8s).
+// Without it gpt-oss-20b defaults to medium/high reasoning and can spend
+// 40s+ before the first content token — past Vercel Edge's 30s cap, which
+// killed every extract/link call (and every retry of it) the same way.
+const DEFAULT_REASONING_EFFORT = "low" as const;
 // Max auto-continue rounds when the model returns finish_reason === 'length'.
 // Each round re-calls the model with the partial output appended as an
 // assistant message, asking it to continue. 3 rounds gives up to 4 total
@@ -142,6 +154,7 @@ async function streamOnce({
       messages,
       temperature,
       max_tokens: maxTokens,
+      reasoning_effort: DEFAULT_REASONING_EFFORT,
       stream: true,
     }),
     signal,
@@ -249,7 +262,7 @@ export async function POST(request: NextRequest) {
     });
   }
 
-  const effectiveMaxTokens = max_tokens ?? 32768;
+  const effectiveMaxTokens = Math.min(max_tokens ?? MODEL_MAX_TOKENS_CAP, MODEL_MAX_TOKENS_CAP);
   const maxContinuations = DEFAULT_MAX_CONTINUATIONS;
 
   const encoder = new TextEncoder();

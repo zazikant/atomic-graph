@@ -62,7 +62,9 @@ export class NvidiaClient {
         model: this.model,
         messages,
         temperature: 0.7,
-        max_tokens: 32768,
+        // gpt-oss-20b hard output limit (ax-translator MODEL_MAX_TOKENS_CAP).
+        // The route auto-continues on finish_reason:'length' for longer output.
+        max_tokens: 4096,
       }),
     });
 
@@ -173,7 +175,9 @@ export class NvidiaClient {
         model: this.model,
         messages,
         temperature: 0.7,
-        max_tokens: 32768,
+        // gpt-oss-20b hard output limit (ax-translator MODEL_MAX_TOKENS_CAP).
+        // The route auto-continues on finish_reason:'length' for longer output.
+        max_tokens: 4096,
       }),
     });
 
